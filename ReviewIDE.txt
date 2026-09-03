@@ -38,3 +38,9 @@ Update: Two-Stage Flow (Snippet Phase -> Answering Phase), Speed-Based Scoring, 
   - Verified audio mode visualizer had zero background thumbnail bleeding.
   - Verified leaderboard sorted descending and crowns hidden in Solo mode.
   - Recording: `verify_two_stage_scoring_and_crowns`
+
+## GitHub Deployment
+- **Repository**: https://github.com/Thianrawit/GuessThe
+- **GitHub Pages URL**: https://thianrawit.github.io/GuessThe/
+- **Mode Support**: Both Singleplayer and Online Multiplayer (PeerJS P2P) verified working seamlessly.
+
