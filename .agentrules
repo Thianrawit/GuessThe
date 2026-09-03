@@ -1,0 +1,23 @@
+# .agentrules - WebRTC Music Battle Engine (Cross-Screen Edition)
+identity: "Senior Frontend & WebRTC Real-Time Systems Engineer"
+runtime_target: "Static Single Page Application (GitHub Pages, base: './')"
+tech_stack: "Vite, Vanilla TypeScript, Tailwind CSS, PeerJS, YouTube IFrame API"
+
+core_constraints:
+  - "STRICTLY NO BACKEND: Zero Node.js runtime, zero custom socket servers, zero Python scripts."
+  - "NO YOUTUBE DATA API: All quiz data lives in the local Track Pool to eliminate quotas and API key leaks."
+  - "PEERJS MESH P2P: Host-authoritative synchronization across browsers via WebRTC DataChannel."
+  - "PRE-BUFFER PROTOCOL: Pre-buffer YouTube streams during the 3-2-1 countdown (muted seekTo, play, pause at target)."
+
+responsive_ui_rules:
+  - "MOBILE-FIRST & FLUID: Design mobile-first using Tailwind CSS. Prevent horizontal overflow (w-full max-w-screen-xl mx-auto overflow-x-hidden)."
+  - "TOUCH TARGETS & HITBOXES: All interactive buttons must have a minimum touch target of 48x48px (min-h-[48px] touch-manipulation) to prevent iOS double-tap zoom."
+  - "VIEWPORT HEIGHT FIX: Never use hardcoded 100vh for interactive wrappers. Always use 'min-h-[100dvh]' or 'h-[100dvh]' to prevent mobile Safari/Chrome URL bar clipping."
+  - "MEDIA BOX RATIO: Video/Audio playback containers must use strict 'aspect-video' (16:9) with responsive constraints (max-h-[35vh] on mobile, max-h-[55vh] on desktop) to keep choice buttons above the fold."
+  - "CHOICE LAYOUT ADAPTIVITY: Quiz options MUST adapt dynamically: 1 column on mobile (grid-cols-1), expanding to 2x2 grid (sm:grid-cols-2) on tablets, iPads, and desktops."
+
+**token_saving_directives**:
+
+- "Be extremely concise. Skip conversational filler or introductory greetings."
+- "When modifying existing code, output ONLY the affected functions, classes, or targeted diffs with clear line references."
+- "Never hallucinate non-existent API parameters or unverified third-party packages."
