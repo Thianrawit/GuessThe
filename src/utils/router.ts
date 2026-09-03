@@ -16,16 +16,17 @@ export function onNotFound(handler: RouteHandler): void {
 }
 
 export function navigate(path: string, params?: Record<string, string>): void {
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
   if (params) {
     const query = new URLSearchParams(params).toString();
-    window.location.hash = `${path}?${query}`;
+    window.location.hash = `${cleanPath}?${query}`;
   } else {
-    window.location.hash = path;
+    window.location.hash = cleanPath;
   }
 }
 
 export function getCurrentRoute(): { path: string; params: Record<string, string> } {
-  const hash = window.location.hash.slice(1) || '/';
+  const hash = window.location.hash.slice(1) || '/main';
   const [path, queryString] = hash.split('?');
   const params: Record<string, string> = {};
   if (queryString) {
@@ -34,7 +35,7 @@ export function getCurrentRoute(): { path: string; params: Record<string, string
       params[key] = value;
     });
   }
-  return { path, params };
+  return { path: path || '/main', params };
 }
 
 function handleRouteChange(): void {
@@ -49,10 +50,7 @@ function handleRouteChange(): void {
 
 export function initRouter(): void {
   window.addEventListener('hashchange', handleRouteChange);
-  // Handle initial load
-  if (!window.location.hash) {
-    window.location.hash = '/';
-  } else {
-    handleRouteChange();
-  }
+  // เมื่อรีหน้าเว็บ (Reload / F5) ให้ตัดปัญหากลับไปที่หน้าหลัก /main เสมอ
+  window.location.hash = '/main';
+  handleRouteChange();
 }

@@ -196,7 +196,7 @@ export function renderLobbyScreen(): void {
         document.getElementById('btn-back-lobby')?.addEventListener('click', () => {
           peerManager.destroy();
           gameController.destroy();
-          navigate('/');
+          navigate('/main');
         });
 
         // Copy room code

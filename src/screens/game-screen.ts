@@ -135,7 +135,7 @@ export function renderGameScreen(): void {
 
     if (!question) {
       // If game finished or no active session, immediately return to home
-      setTimeout(() => navigate('/'), 0);
+      setTimeout(() => navigate('/main'), 0);
       return container;
     }
 
@@ -276,7 +276,7 @@ export function renderGameScreen(): void {
         onPlayerLeave: (peerId) => {
           if (peerId === peerManager.hostPeerId) {
             alert('⚠️ Host ออกจากห้องแล้ว เกมยุติ');
-            navigate('/');
+            navigate('/main');
           }
         },
         onError: (err) => {

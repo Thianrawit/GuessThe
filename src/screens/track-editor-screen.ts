@@ -660,7 +660,7 @@ export function renderTrackEditorScreen(): void {
       // Back navigation
       container.querySelector('#btn-back')?.addEventListener('click', () => {
         stopPreview();
-        navigate('/');
+        navigate('/main');
       });
 
       // Add or Update Track

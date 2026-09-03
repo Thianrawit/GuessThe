@@ -13,24 +13,25 @@ import { renderLeaderboardScreen } from './screens/leaderboard-screen';
 import { gameController } from './game/game-controller';
 import { navigate } from './utils/router';
 
+// ── Clear session on reload to cleanly return to /main ──
+gameController.clearSession();
+
 // ── Register Routes ──
-registerRoute('/', () => renderHomeScreen());
-registerRoute('/editor', () => renderTrackEditorScreen());
+registerRoute('/', () => navigate('/main'));
+registerRoute('/main', () => renderHomeScreen());
 registerRoute('/lobby', () => renderLobbyScreen());
+registerRoute('/editor', () => renderTrackEditorScreen());
 registerRoute('/game', () => {
   if (!gameController.currentQuestion) {
-    const restored = gameController.restoreSession();
-    if (!restored || !gameController.currentQuestion) {
-      navigate('/');
-      return;
-    }
+    navigate('/main');
+    return;
   }
   renderGameScreen();
 });
 registerRoute('/results', () => renderLeaderboardScreen());
 
 // ── 404 Fallback ──
-onNotFound(() => renderHomeScreen());
+onNotFound(() => navigate('/main'));
 
 // ── Initialize Router ──
 initRouter();

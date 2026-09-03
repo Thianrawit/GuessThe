@@ -153,7 +153,7 @@ export function renderLeaderboardScreen(): void {
       document.getElementById('btn-go-home')?.addEventListener('click', () => {
         peerManager.destroy();
         gameController.destroy();
-        navigate('/');
+        navigate('/main');
       });
     }, 0);
 
