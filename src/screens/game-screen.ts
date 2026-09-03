@@ -121,9 +121,10 @@ export function renderGameScreen(): void {
     const container = document.createElement('div');
     container.className = 'min-h-[100dvh] flex flex-col px-3 py-3 sm:px-4 sm:py-4';
 
-    // If no active question in memory, try restoring in-progress game session
+    // If no active question in memory (e.g. reload or ended), return to /main
     if (!gameController.currentQuestion) {
-      gameController.restoreSession();
+      setTimeout(() => navigate('/main'), 0);
+      return container;
     }
 
     const question = gameController.currentQuestion;

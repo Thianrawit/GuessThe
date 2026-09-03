@@ -11,10 +11,15 @@ import { renderGameScreen } from './screens/game-screen';
 import { renderLeaderboardScreen } from './screens/leaderboard-screen';
 
 import { gameController } from './game/game-controller';
+import { peerManager } from './network/peer-manager';
+import { mediaEngine } from './engine/media-engine';
 import { navigate } from './utils/router';
 
-// ── Clear session on reload to cleanly return to /main ──
+// ── Clean up all state on reload to cleanly return to /main ──
 gameController.clearSession();
+gameController.destroy();
+peerManager.destroy();
+mediaEngine.destroy();
 
 // ── Register Routes ──
 registerRoute('/', () => navigate('/main'));

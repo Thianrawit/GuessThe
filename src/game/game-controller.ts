@@ -428,24 +428,9 @@ class GameController {
     this._phaseCallback = null;
   }
 
-  /** Save active game state to sessionStorage */
+  /** Save active game state (disabled to ensure reload returns to /main) */
   saveSession(): void {
-    if (this._questions.length === 0 || this._currentIndex >= this._questions.length) {
-      this.clearSession();
-      return;
-    }
-    try {
-      const sessionData: SavedSession = {
-        questions: this._questions,
-        currentIndex: this._currentIndex,
-        config: this._config,
-        players: this.players,
-        role: peerManager.role,
-      };
-      sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionData));
-    } catch {
-      /* ignore */
-    }
+    // Disabled: reloading returns to /main immediately
   }
 
   /** Clear saved game session */
@@ -457,42 +442,10 @@ class GameController {
     }
   }
 
-  /** Restore game session if still in progress */
+  /** Restore game session (disabled: always return to /main on refresh) */
   restoreSession(): boolean {
-    try {
-      const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
-      if (!raw) return false;
-      const data: SavedSession = JSON.parse(raw);
-      if (
-        !data ||
-        !Array.isArray(data.questions) ||
-        data.questions.length === 0 ||
-        typeof data.currentIndex !== 'number' ||
-        data.currentIndex >= data.questions.length
-      ) {
-        this.clearSession();
-        return false;
-      }
-
-      // If it was multiplayer (host/client), the WebRTC connection was severed on refresh
-      if (data.role !== 'solo') {
-        this.clearSession();
-        return false;
-      }
-
-      this._questions = data.questions;
-      this._currentIndex = data.currentIndex;
-      this._config = data.config;
-      this._players.clear();
-      data.players.forEach((p) => {
-        this._players.set(p.peerId, p);
-      });
-      this._phase = 'COUNTDOWN';
-      return true;
-    } catch {
-      this.clearSession();
-      return false;
-    }
+    this.clearSession();
+    return false;
   }
 }
 

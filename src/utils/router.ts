@@ -1,5 +1,5 @@
 /* ──────────────────────────────────────────────
-   Simple Hash Router
+   Direct HTML5 History Router (No Hash /#)
    ────────────────────────────────────────────── */
 
 type RouteHandler = (params?: Record<string, string>) => void;
@@ -8,34 +8,67 @@ const routes: Map<string, RouteHandler> = new Map();
 let notFoundHandler: RouteHandler | null = null;
 
 export function registerRoute(path: string, handler: RouteHandler): void {
-  routes.set(path, handler);
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  routes.set(cleanPath, handler);
 }
 
 export function onNotFound(handler: RouteHandler): void {
   notFoundHandler = handler;
 }
 
-export function navigate(path: string, params?: Record<string, string>): void {
-  const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  if (params) {
-    const query = new URLSearchParams(params).toString();
-    window.location.hash = `${cleanPath}?${query}`;
-  } else {
-    window.location.hash = cleanPath;
+/** Detect base subfolder if hosted on GitHub Pages (e.g. /GuessThe) */
+export function getBasePath(): string {
+  const path = window.location.pathname;
+  const match = path.match(/^(\/[^\/]+)/);
+  if (
+    match &&
+    !['/main', '/lobby', '/editor', '/game', '/results', '/index.html'].includes(
+      match[1]
+    )
+  ) {
+    return match[1];
   }
+  return '';
 }
 
+/** Navigate to a direct URL path */
+export function navigate(path: string, params?: Record<string, string>): void {
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  const basePath = getBasePath();
+  const queryString = params ? `?${new URLSearchParams(params).toString()}` : '';
+  const fullPath = `${basePath}${cleanPath}${queryString}`;
+
+  window.history.pushState(null, '', fullPath);
+  handleRouteChange();
+}
+
+/** Get current route from pathname and query */
 export function getCurrentRoute(): { path: string; params: Record<string, string> } {
-  const hash = window.location.hash.slice(1) || '/main';
-  const [path, queryString] = hash.split('?');
-  const params: Record<string, string> = {};
-  if (queryString) {
-    const searchParams = new URLSearchParams(queryString);
-    searchParams.forEach((value, key) => {
-      params[key] = value;
-    });
+  // If an old hash remains in URL (e.g. #/main, #/lobby or #/), wipe it out and use direct URL
+  if (window.location.hash) {
+    const basePath = getBasePath();
+    const cleanHash = window.location.hash.replace(/^#\/?/, '').split('?')[0];
+    const targetPath = cleanHash ? (cleanHash.startsWith('/') ? cleanHash : `/${cleanHash}`) : '/main';
+    window.history.replaceState(null, '', `${basePath}${targetPath}`);
   }
-  return { path: path || '/main', params };
+
+  const basePath = getBasePath();
+  let path = window.location.pathname;
+
+  if (basePath && path.startsWith(basePath)) {
+    path = path.slice(basePath.length);
+  }
+
+  path = path.replace(/\/index\.html$/, '').replace(/\/$/, '') || '/main';
+  if (!path.startsWith('/')) path = `/${path}`;
+
+  const searchParams = new URLSearchParams(window.location.search);
+  const params: Record<string, string> = {};
+  searchParams.forEach((value, key) => {
+    params[key] = value;
+  });
+
+  return { path, params };
 }
 
 function handleRouteChange(): void {
@@ -49,8 +82,10 @@ function handleRouteChange(): void {
 }
 
 export function initRouter(): void {
-  window.addEventListener('hashchange', handleRouteChange);
-  // เมื่อรีหน้าเว็บ (Reload / F5) ให้ตัดปัญหากลับไปที่หน้าหลัก /main เสมอ
-  window.location.hash = '/main';
+  window.addEventListener('popstate', handleRouteChange);
+
+  // เมื่อเปิดหรือรีหน้าเว็บ (F5 / Reload) ให้ตัดปัญหากลับไปที่หน้าหลัก /main เสมอ!
+  const basePath = getBasePath();
+  window.history.replaceState(null, '', `${basePath}/main`);
   handleRouteChange();
 }
