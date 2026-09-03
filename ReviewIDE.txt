@@ -44,3 +44,27 @@ Update: Two-Stage Flow (Snippet Phase -> Answering Phase), Speed-Based Scoring, 
 - **GitHub Pages URL**: https://thianrawit.github.io/GuessThe/
 - **Mode Support**: Both Singleplayer and Online Multiplayer (PeerJS P2P) verified working seamlessly.
 
+## Documentation (can.txt)
+- Created `can.txt` documenting all game features, menus, buttons, gameplay flow, scoring rules, network architecture, and full directory tree.
+
+## Media Streaming Refactoring (Ad-Free Hybrid Architecture)
+- **Problem Solved**: Eliminated annoying YouTube pre-roll ads during real gameplay while keeping YouTube URL compatibility.
+- **Hybrid Architecture**:
+  1. `src/screens/track-editor-screen.ts`: Kept YouTube IFrame API & oEmbed for easy title fetching and visual timeline timeline scrubbing.
+  2. `src/screens/game-screen.ts`: Switched to HTML5 Media Engine (`<video>` / `<audio>`) utilizing direct stream URLs (.mp4 / .webm).
+- **New Module `src/engine/stream-resolver.ts`**:
+  - Automatically converts YouTube ID to direct HTML5 stream URL via Invidious API with fallback instances (`invidious.nerdvpn.de`, `inv.nadeko.net`, `invidious.jing.rocks`, `yt.artemislena.eu`, etc.).
+  - 3.5-second request timeout per instance.
+  - In-memory cache (`Map<string, string>`) to avoid redundant requests during a game round.
+  - Formats: adaptive audio (`audio/mp4` / `audio/webm`) for audio-only and `formatStreams` (720p/360p) for MV mode.
+- **New Module `src/engine/media-engine.ts`**:
+  - `initAndPrebuffer`: Fetches direct stream and prebuffers at `startTime` during 3-2-1 countdown.
+  - `playSnippet`: Unmutes, plays for `snippetDuration`, and auto-pauses/mutes.
+  - `playReveal`: Seeks to `revealStartTime`, unhides video, and plays for `revealDuration`.
+  - `stop` & `destroy`: Safely stops and cleans up DOM media elements.
+- **Backward Compatibility**:
+  - 100% compatible with existing `guessthe-tracks.json` schema and PeerJS network state machine.
+  - Built and verified with `npm run build`.
+
+
+

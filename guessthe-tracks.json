@@ -1,0 +1,92 @@
+[
+  {
+    "id": "sample01",
+    "title": "The Richman Toy - ธิดาประจำอำเภอ",
+    "youtubeId": "Hq_pjxRmn-g",
+    "startTime": 145,
+    "revealStartTime": 145,
+    "type": "video",
+    "points": 10
+  },
+  {
+    "id": "sample02",
+    "title": "ฤดูกาล - 25hours",
+    "youtubeId": "VtUS__tF2EA",
+    "startTime": 41,
+    "revealStartTime": 162,
+    "type": "video",
+    "points": 10
+  },
+  {
+    "id": "sample03",
+    "title": "อะไรก็ยอม - LOSO",
+    "youtubeId": "c31LQOCmLVU",
+    "startTime": 28,
+    "revealStartTime": 86,
+    "type": "video",
+    "points": 10
+  },
+  {
+    "id": "sample04",
+    "title": "คืนจันทร์ - LOSO",
+    "youtubeId": "G2JFOEFmnnI",
+    "startTime": 21,
+    "revealStartTime": 106,
+    "type": "video",
+    "points": 10
+  },
+  {
+    "id": "sample05",
+    "title": "ใจสั่งมา - LOSO",
+    "youtubeId": "RXZ5X_LGX9Q",
+    "startTime": 35,
+    "revealStartTime": 91,
+    "type": "video",
+    "points": 10
+  },
+  {
+    "id": "sample06",
+    "title": "ฤดูร้อน - Paradox",
+    "youtubeId": "PCmpeFoPzwY",
+    "startTime": 9,
+    "revealStartTime": 59,
+    "type": "video",
+    "points": 10
+  },
+  {
+    "id": "sample07",
+    "title": "ยินดีที่ไม่รู้จัก - 25hours",
+    "youtubeId": "5SZByn3eik0",
+    "startTime": 0,
+    "revealStartTime": 49,
+    "type": "video",
+    "points": 10
+  },
+  {
+    "id": "sample08",
+    "title": "ไม่ต่างกัน - 25hours",
+    "youtubeId": "mSWNvFaYrXY",
+    "startTime": 3,
+    "revealStartTime": 52,
+    "type": "video",
+    "points": 10
+  },
+  {
+    "id": "sample09",
+    "title": "TATTOO COLOUR - Cinderella",
+    "youtubeId": "4J-cyby36g4",
+    "startTime": 10,
+    "revealStartTime": 45,
+    "type": "video",
+    "points": 10
+  },
+  {
+    "id": "sample10",
+    "title": "เพ้อเจ้อ - Alarm 9",
+    "youtubeId": "SqKJOgFTIjc",
+    "startTime": 7,
+    "revealStartTime": 47,
+    "type": "video",
+    "points": 10
+  }
+]

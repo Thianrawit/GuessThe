@@ -7,10 +7,12 @@ import { navigate } from '../utils/router';
 import { gameController } from '../game/game-controller';
 import { peerManager } from '../network/peer-manager';
 import { destroyPlayer } from '../engine/youtube-player';
+import { mediaEngine } from '../engine/media-engine';
 import type { NetworkPacket } from '../types/index';
 
 export function renderLeaderboardScreen(): void {
   destroyPlayer();
+  mediaEngine.destroy();
 
   setScreen(() => {
     const container = document.createElement('div');

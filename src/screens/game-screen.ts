@@ -6,15 +6,7 @@ import { setScreen } from '../utils/dom';
 import { navigate, getCurrentRoute } from '../utils/router';
 import { gameController } from '../game/game-controller';
 import { peerManager } from '../network/peer-manager';
-import {
-  createYouTubePlayer,
-  prebufferAt,
-  playSegment,
-  playReveal,
-  stopPlayer,
-  destroyPlayer,
-  getCurrentPlayer,
-} from '../engine/youtube-player';
+import { mediaEngine } from '../engine/media-engine';
 import { countdown } from '../engine/timer';
 import type { NetworkPacket, QuestionSession, PlayerInfo } from '../types/index';
 
@@ -122,6 +114,7 @@ export function renderGameScreen(): void {
   if (currentSegmentCancel) { currentSegmentCancel(); currentSegmentCancel = null; }
   if (countdownCancel) { countdownCancel(); countdownCancel = null; }
   if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
+  mediaEngine.stop();
   hasRevealedCurrentQuestion = false;
 
   setScreen(() => {
@@ -175,10 +168,8 @@ export function renderGameScreen(): void {
             </span>
           </div>
 
-          <!-- YouTube Player Container with pointer-events disabled (Zero opacity in audio mode to block thumbnail bleed) -->
-          <div id="yt-player-container" class="w-full h-full pointer-events-none transition-opacity duration-300 ${question.type === 'audio' ? 'opacity-0' : 'opacity-100'}">
-            <div id="yt-player" class="w-full h-full"></div>
-          </div>
+          <!-- HTML5 Media Player Container (Zero opacity in audio mode to block any visuals) -->
+          <div id="media-player-container" class="w-full h-full pointer-events-none transition-opacity duration-300 ${question.type === 'audio' ? 'opacity-0' : 'opacity-100'}"></div>
 
           <!-- Curtain Overlay (100% solid pitch black in audio mode to guarantee zero thumbnail bleeding) -->
           <div id="media-curtain" class="absolute inset-0 ${question.type === 'audio' ? 'bg-[#0a0a14] z-20' : 'bg-bg-primary/95 backdrop-blur-md z-20'} flex flex-col items-center justify-center gap-2">
@@ -293,8 +284,7 @@ export function renderGameScreen(): void {
       if (phase === 'REVEAL') {
         const curQ = gameController.currentQuestion;
         if (curQ) {
-          const p = getCurrentPlayer();
-          showReveal(p, curQ);
+          showReveal(curQ);
         }
       }
     });
@@ -310,25 +300,25 @@ export function renderGameScreen(): void {
 async function initGameFlow(question: QuestionSession, flowId: number): Promise<void> {
   const countdownOverlay = document.getElementById('countdown-overlay');
 
-  let player: YT.Player | null = null;
   let playerFailed = false;
 
   try {
-    // 1. Create YouTube Player & Prebuffer with 5-second timeout
-    player = await Promise.race([
-      (async () => {
-        const p = await createYouTubePlayer('yt-player', question.youtubeId);
-        await prebufferAt(p, question.startTime);
-        return p;
-      })(),
+    // 1. Resolve Direct Stream URL & Prebuffer HTML5 Media Player with 6-second timeout
+    await Promise.race([
+      mediaEngine.initAndPrebuffer(
+        'media-player-container',
+        question.youtubeId,
+        question.type,
+        question.startTime
+      ),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('โหลดคลิปเกิน 5 วินาที ข้ามไปเล่นต่อทันที')), 5000)
+        setTimeout(() => reject(new Error('โหลดคลิปเกินกำหนด ข้ามไปเล่นต่อทันที')), 6000)
       )
     ]);
     if (activeFlowId !== flowId) return;
   } catch (e) {
-    // YouTube player failed or timed out (> 5s)
-    console.warn('YouTube player failed or timed out (>5s), continuing without media:', e);
+    // Media player failed or timed out (> 6s)
+    console.warn('HTML5 media player failed or timed out (>6s), continuing without media:', e);
     playerFailed = true;
 
     // Show error in media container
@@ -337,7 +327,7 @@ async function initGameFlow(question: QuestionSession, flowId: number): Promise<
       mediaContainer.innerHTML = `
         <div class="flex flex-col items-center justify-center gap-2 p-6 text-center">
           <span class="text-3xl">⚠️</span>
-          <p class="text-accent-yellow text-sm font-semibold">ข้ามวิดีโอเนื่องจากโหลดเกิน 5 วินาที หรือไม่อนุญาตให้ Embed</p>
+          <p class="text-accent-yellow text-sm font-semibold">ข้ามวิดีโอเนื่องจากโหลดเกินเวลาหรือไม่สามารถดึงสตรีมได้</p>
           <p class="text-text-muted text-xs">เลือกคำตอบจากตัวเลือกด้านล่างได้ตามปกติ</p>
         </div>
       `;
@@ -365,11 +355,11 @@ async function initGameFlow(question: QuestionSession, flowId: number): Promise<
     // Countdown complete → Guessing Phase
     if (countdownOverlay) countdownOverlay.style.display = 'none';
     
-    if (playerFailed || !player) {
+    if (playerFailed || !mediaEngine.element) {
       // No media — skip to guessing directly, enable buttons
       startGuessingPhaseNoMedia(question);
     } else {
-      startGuessingPhase(player, question);
+      startGuessingPhase(question);
     }
   });
   countdownCancel = cancel;
@@ -539,7 +529,7 @@ function showRevealNoMedia(question: QuestionSession): void {
   }, config.revealDuration * 1000);
 }
 
-function startGuessingPhase(player: YT.Player, question: QuestionSession): void {
+function startGuessingPhase(question: QuestionSession): void {
   const config = gameController.config;
   const snippetSec = config.snippetDuration || 3;
   const answerSec = config.guessDuration || 10;
@@ -564,6 +554,7 @@ function startGuessingPhase(player: YT.Player, question: QuestionSession): void 
   // MV: uncover video to show the clip. Audio: keep curtain covered in solid black
   if (question.type === 'video') {
     if (curtain) curtain.classList.add('hidden');
+    mediaEngine.showVideo();
   } else {
     if (curtain) {
       curtain.classList.remove('hidden');
@@ -573,9 +564,9 @@ function startGuessingPhase(player: YT.Player, question: QuestionSession): void 
   }
 
   // Play the snippet for snippetDuration seconds
-  const { cancel } = playSegment(player, question.startTime, snippetSec, () => {
+  const { cancel } = mediaEngine.playSnippet(question.startTime, snippetSec, () => {
     // Snippet completed!
-    // Cover video immediately when paused to prevent YouTube pause card from spoiling title
+    // Cover video immediately when paused to prevent preview freeze spoiler
     if (curtain) {
       if (curtainTitle) curtainTitle.textContent = 'หมดเวลาฟังเพลงแล้ว!';
       if (curtainSub) curtainSub.textContent = 'เลือกคำตอบจากตัวเลือกด้านล่าง';
@@ -606,7 +597,7 @@ function startGuessingPhase(player: YT.Player, question: QuestionSession): void 
         hasAnswered = true;
         gameController.submitAnswer(myPeerId, -1, answerSec * 1000);
         if (peerManager.role === 'solo') {
-          setTimeout(() => showReveal(player, question), 600);
+          setTimeout(() => showReveal(question), 600);
         }
       }
     });
@@ -618,12 +609,11 @@ function startGuessingPhase(player: YT.Player, question: QuestionSession): void 
         hasAnswered = true;
         const timeUsedMs = Date.now() - answerStartTime;
         const index = parseInt(btn.getAttribute('data-index') || '0');
-        handleChoiceClick(index, player, question, timeUsedMs);
+        handleChoiceClick(index, question, timeUsedMs);
       };
     });
   });
   currentSegmentCancel = cancel;
-
 
   // Host triggers guessing state
   if (peerManager.isHost) {
@@ -631,7 +621,7 @@ function startGuessingPhase(player: YT.Player, question: QuestionSession): void 
   }
 }
 
-function handleChoiceClick(choiceIndex: number, player: YT.Player | null, question: QuestionSession, timeUsedMs: number = 0): void {
+function handleChoiceClick(choiceIndex: number, question: QuestionSession, timeUsedMs: number = 0): void {
   if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
   const timerContainer = document.getElementById('timer-container');
   if (timerContainer) timerContainer.classList.remove('timer-urgent-pulse');
@@ -650,16 +640,18 @@ function handleChoiceClick(choiceIndex: number, player: YT.Player | null, questi
 
   // Update status
   const statusText = document.getElementById('status-text');
+  const secUsed = (timeUsedMs / 1000).toFixed(1);
   if (peerManager.role === 'solo') {
-    if (statusText) statusText.textContent = '⏳ กำลังเฉลย...';
-    gameController.submitAnswer(myPeerId, choiceIndex);
+    if (statusText) statusText.textContent = `⏳ ตอบแล้ว (${secUsed}s) กำลังเฉลย...`;
+    gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
+    setTimeout(() => showReveal(question), 800);
   } else {
-    if (statusText) statusText.textContent = '⏳ ตอบแล้ว รอผู้เล่นอื่น...';
-    gameController.submitAnswer(myPeerId, choiceIndex);
+    if (statusText) statusText.textContent = `⏳ ตอบแล้ว (${secUsed}s) กำลังรอผู้เล่นอื่น...`;
+    gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
   }
 }
 
-function showReveal(player: YT.Player | null, question: QuestionSession): void {
+function showReveal(question: QuestionSession): void {
   if (hasRevealedCurrentQuestion) return;
   hasRevealedCurrentQuestion = true;
 
@@ -684,23 +676,22 @@ function showReveal(player: YT.Player | null, question: QuestionSession): void {
   if (statusText) statusText.textContent = `🎵 เฉลย: ${question.title}`;
 
   // Uncover video during reveal
-  const ytContainer = document.getElementById('yt-player-container');
-  if (ytContainer) {
-    ytContainer.classList.remove('opacity-0');
-    ytContainer.classList.add('opacity-100');
+  mediaEngine.showVideo();
+  const playerContainer = document.getElementById('media-player-container');
+  if (playerContainer) {
+    playerContainer.classList.remove('opacity-0');
+    playerContainer.classList.add('opacity-100');
   }
   if (curtain) {
     curtain.classList.add('hidden');
   }
 
-  // Play reveal audio if player is available
-  if (player) {
-    const revealStart = (typeof question.revealStartTime === 'number' && question.revealStartTime >= 0)
-      ? question.revealStartTime
-      : question.startTime;
-    const { cancel } = playReveal(player, revealStart, config.revealDuration);
-    currentSegmentCancel = cancel;
-  }
+  // Play reveal audio/video continuously for revealDuration
+  const revealStart = (typeof question.revealStartTime === 'number' && question.revealStartTime >= 0)
+    ? question.revealStartTime
+    : question.startTime;
+  const { cancel } = mediaEngine.playReveal(revealStart, config.revealDuration);
+  currentSegmentCancel = cancel;
 
   // Update choice buttons — correct/wrong + player badges
   const buttons = document.querySelectorAll('.choice-btn') as NodeListOf<HTMLButtonElement>;
@@ -752,12 +743,13 @@ function showReveal(player: YT.Player | null, question: QuestionSession): void {
   // After reveal duration, move to next question
   setTimeout(() => {
     if (currentSegmentCancel) { currentSegmentCancel(); currentSegmentCancel = null; }
-    if (player) stopPlayer(player);
+    mediaEngine.stop();
     
     if (peerManager.isHost || peerManager.role === 'solo') {
       gameController.nextQuestion();
       
       if (gameController.phase === 'GAME_OVER') {
+        mediaEngine.destroy();
         navigate('/results');
       } else {
         // Re-render for next question
@@ -799,6 +791,7 @@ function handleGamePacket(packet: NetworkPacket): void {
     }
 
     case 'GAME_OVER':
+      mediaEngine.destroy();
       gameController.receiveGameOver(
         packet.finalScores,
         packet.correctCounts,
