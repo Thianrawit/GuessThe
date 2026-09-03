@@ -102,5 +102,7 @@ Update: Two-Stage Flow (Snippet Phase -> Answering Phase), Speed-Based Scoring, 
   - Whenever user refreshes or reloads (F5 / browser refresh), `gameController.clearSession()` is called immediately to wipe any stale session data.
   - Router forcefully redirects to `#/main` on load and when encountering 404 or root `/`.
   - All back navigation buttons across all screens (`track-editor-screen`, `lobby-screen`, `leaderboard-screen`, `game-screen`) updated from `navigate('/')` to `navigate('/main')`.
-- **Build Verification**:
+- **Build & Deployment Verification**:
   - TypeScript (`npx tsc --noEmit`): ✅ Pass (0 errors).
+  - Production Build (`npm run build`): ✅ Pass (Exit code: 0).
+  - GitHub Push: ✅ Successfully pushed to `https://github.com/Thianrawit/GuessThe` (branch: `main`).
