@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="utf-8" />
+    <title>GuessThe? — Redirecting...</title>
+    <script>
+      // Single Page App redirect for GitHub Pages
+      // When refreshing on /game, /lobby, etc., redirect straight to /main
+      const path = window.location.pathname;
+      const isGitHubPages = path.includes('/GuessThe');
+      const target = isGitHubPages ? '/GuessThe/main' : '/main';
+      window.location.replace(target);
+    </script>
+  </head>
+  <body></body>
+</html>
