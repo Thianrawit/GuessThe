@@ -5,6 +5,7 @@ interface YT {
     elementId: string | HTMLElement,
     options: {
       videoId?: string;
+      host?: string;
       width?: string | number;
       height?: string | number;
       playerVars?: Record<string, unknown>;

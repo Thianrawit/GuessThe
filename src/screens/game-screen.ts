@@ -355,7 +355,7 @@ async function initGameFlow(question: QuestionSession, flowId: number): Promise<
     // Countdown complete → Guessing Phase
     if (countdownOverlay) countdownOverlay.style.display = 'none';
     
-    if (playerFailed || !mediaEngine.element) {
+    if (playerFailed || !mediaEngine.isReady) {
       // No media — skip to guessing directly, enable buttons
       startGuessingPhaseNoMedia(question);
     } else {

@@ -1,44 +1,85 @@
 /* ──────────────────────────────────────────────
-   HTML5 Media Engine
-   High-performance, Ad-free direct media player (<video> & <audio>)
+   Resilient Dual Media Engine
+   1. Primary: Direct HTML5 Media Streaming (.mp4/.webm)
+   2. Fallback: Optimized Privacy-Enhanced YouTube No-Cookie Player (start param pre-set)
    ────────────────────────────────────────────── */
 
 import { resolveStreamUrl } from './stream-resolver';
+import { waitForYTApi, extractYouTubeId } from './youtube-player';
 
 export interface MediaSegmentControl {
   cancel: () => void;
 }
 
-class MediaEngine {
-  private mediaElement: HTMLVideoElement | null = null;
-  private segmentTimeout: number | null = null;
-  private currentType: 'audio' | 'video' = 'video';
+type PlayerMode = 'html5' | 'youtube' | null;
 
-  get element(): HTMLVideoElement | null {
-    return this.mediaElement;
+class MediaEngine {
+  private mode: PlayerMode = null;
+  private html5Element: HTMLVideoElement | null = null;
+  private ytPlayer: YT.Player | null = null;
+  private segmentTimeout: number | null = null;
+
+  get isReady(): boolean {
+    return this.mode !== null;
   }
 
   /**
-   * Prebuffer media at specific startTime during the 3-2-1 countdown phase
+   * Initializes and prebuffers the media element at startTime
    */
   async initAndPrebuffer(
     containerId: string,
-    youtubeId: string,
+    rawUrlOrId: string,
     type: 'audio' | 'video',
     startTime: number
-  ): Promise<HTMLVideoElement> {
+  ): Promise<void> {
     this.stop();
     this.destroy();
 
-    this.currentType = type;
     const container = document.getElementById(containerId);
     if (!container) {
       throw new Error(`Container #${containerId} ไม่พบในหน้าจอ`);
     }
 
+    const youtubeId = extractYouTubeId(rawUrlOrId);
+
+    // ── ATTEMPT 1: Direct HTML5 Stream via Invidious / Direct URL ──
+    try {
+      const streamUrl = await resolveStreamUrl(youtubeId || rawUrlOrId, type, 1200);
+      if (streamUrl) {
+        await this.setupHtml5Player(container, streamUrl, type, startTime);
+        this.mode = 'html5';
+        console.log('[MediaEngine] Using HTML5 Stream Engine');
+        return;
+      }
+    } catch (e) {
+      console.warn(
+        '[MediaEngine] Invidious direct stream unavailable (CORS/Offline). Falling back to YouTube No-Cookie Player:',
+        (e as Error).message
+      );
+    }
+
+    // ── ATTEMPT 2: Fallback to YouTube Privacy-Enhanced No-Cookie Player ──
+    if (youtubeId && youtubeId.length === 11) {
+      await this.setupYouTubePlayer(container, youtubeId, type, startTime);
+      this.mode = 'youtube';
+      console.log('[MediaEngine] Using YouTube No-Cookie Fallback Player');
+      return;
+    }
+
+    throw new Error('ไม่สามารถเล่นสื่อนี้ได้');
+  }
+
+  /**
+   * Setup HTML5 Video Element
+   */
+  private async setupHtml5Player(
+    container: HTMLElement,
+    streamUrl: string,
+    type: 'audio' | 'video',
+    startTime: number
+  ): Promise<void> {
     container.innerHTML = '';
 
-    // Create HTML5 Video element (capable of rendering both video and audio streams)
     const el = document.createElement('video');
     el.id = 'active-media-player';
     el.className = 'w-full h-full object-contain bg-black transition-opacity duration-300';
@@ -53,24 +94,19 @@ class MediaEngine {
     }
 
     container.appendChild(el);
-    this.mediaElement = el;
+    this.html5Element = el;
 
-    // 1. Resolve direct stream URL via Invidious proxy
-    const streamUrl = await resolveStreamUrl(youtubeId, type);
-
-    // 2. Set src, mute, and pre-seek to startTime
     el.src = streamUrl;
     el.muted = true;
 
-    return new Promise<HTMLVideoElement>((resolve, reject) => {
+    return new Promise<void>((resolve) => {
       let settled = false;
       const timeout = setTimeout(() => {
         if (!settled) {
           settled = true;
-          // Even if canplay did not fire within 4.5s, resolve so gameplay is not blocked
-          resolve(el);
+          resolve();
         }
-      }, 4500);
+      }, 3500);
 
       const onCanPlay = () => {
         if (!settled) {
@@ -78,43 +114,114 @@ class MediaEngine {
           clearTimeout(timeout);
           try {
             el.currentTime = Math.max(0, startTime);
-            const playPromise = el.play();
-            if (playPromise !== undefined) {
-              playPromise
-                .then(() => {
-                  setTimeout(() => {
-                    try { el.pause(); } catch { /* ignore */ }
-                    resolve(el);
-                  }, 200);
-                })
-                .catch(() => {
-                  resolve(el);
-                });
+            const p = el.play();
+            if (p !== undefined) {
+              p.then(() => {
+                setTimeout(() => {
+                  try { el.pause(); } catch { /* ignore */ }
+                  resolve();
+                }, 150);
+              }).catch(() => resolve());
             } else {
               el.pause();
-              resolve(el);
+              resolve();
             }
           } catch {
-            resolve(el);
+            resolve();
           }
         }
       };
 
-      const onError = () => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timeout);
-          reject(new Error('HTML5 Video Error: ไม่สามารถโหลดไฟล์สตรีมได้'));
-        }
-      };
-
+      el.addEventListener('canplay', onCanPlay, { once: true });
       el.addEventListener('loadedmetadata', () => {
         try { el.currentTime = Math.max(0, startTime); } catch { /* ignore */ }
       }, { once: true });
-      el.addEventListener('canplay', onCanPlay, { once: true });
-      el.addEventListener('error', onError, { once: true });
+      el.addEventListener('error', () => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          resolve();
+        }
+      }, { once: true });
 
       el.load();
+    });
+  }
+
+  /**
+   * Setup YouTube Player with Privacy-Enhanced No-Cookie & start param to skip 0s pre-roll ads
+   */
+  private async setupYouTubePlayer(
+    container: HTMLElement,
+    youtubeId: string,
+    type: 'audio' | 'video',
+    startTime: number
+  ): Promise<void> {
+    await waitForYTApi();
+
+    container.innerHTML = `<div id="yt-fallback-embed" class="w-full h-full ${type === 'audio' ? 'opacity-0' : 'opacity-100'}"></div>`;
+
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      }, 4500);
+
+      try {
+        this.ytPlayer = new window.YT.Player('yt-fallback-embed', {
+          host: 'https://www.youtube-nocookie.com',
+          videoId: youtubeId,
+          width: '100%',
+          height: '100%',
+          playerVars: {
+            autoplay: 0,
+            controls: 0,
+            disablekb: 1,
+            fs: 0,
+            iv_load_policy: 3,
+            modestbranding: 1,
+            playsinline: 1,
+            rel: 0,
+            start: Math.max(0, Math.floor(startTime)), // Direct seek at embed level skips 0s pre-roll
+            origin: window.location.origin,
+          },
+          events: {
+            onReady: (event) => {
+              if (!settled) {
+                settled = true;
+                clearTimeout(timeout);
+                try {
+                  event.target.mute();
+                  event.target.seekTo(startTime, true);
+                  event.target.playVideo();
+                  setTimeout(() => {
+                    try { event.target.pauseVideo(); } catch { /* ignore */ }
+                    resolve();
+                  }, 400);
+                } catch {
+                  resolve();
+                }
+              }
+            },
+            onError: () => {
+              if (!settled) {
+                settled = true;
+                clearTimeout(timeout);
+                resolve();
+              }
+            },
+          },
+        });
+      } catch {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          resolve();
+        }
+      }
     });
   }
 
@@ -128,28 +235,31 @@ class MediaEngine {
   ): MediaSegmentControl {
     this.clearTimer();
 
-    const el = this.mediaElement;
-    if (!el) {
+    if (this.mode === 'html5' && this.html5Element) {
+      try {
+        this.html5Element.currentTime = Math.max(0, startTime);
+        this.html5Element.muted = false;
+        this.html5Element.volume = 1.0;
+        this.html5Element.play().catch((err) => console.warn('[MediaEngine] HTML5 play error:', err));
+      } catch (e) {
+        console.warn('[MediaEngine] Error seeking HTML5 snippet:', e);
+      }
+    } else if (this.mode === 'youtube' && this.ytPlayer) {
+      try {
+        this.ytPlayer.seekTo(startTime, true);
+        this.ytPlayer.unMute();
+        this.ytPlayer.setVolume(100);
+        this.ytPlayer.playVideo();
+      } catch (e) {
+        console.warn('[MediaEngine] Error seeking YouTube snippet:', e);
+      }
+    } else {
       if (onEnd) onEnd();
       return { cancel: () => {} };
     }
 
-    try {
-      el.currentTime = Math.max(0, startTime);
-      el.muted = false;
-      el.volume = 1.0;
-      el.play().catch((err) => {
-        console.warn('[MediaEngine] Play snippet failed:', err);
-      });
-    } catch (e) {
-      console.warn('[MediaEngine] Error seeking snippet:', e);
-    }
-
     this.segmentTimeout = window.setTimeout(() => {
-      try {
-        el.pause();
-        el.muted = true;
-      } catch { /* ignore */ }
+      this.pauseAndMute();
       this.segmentTimeout = null;
       if (onEnd) onEnd();
     }, durationSec * 1000);
@@ -157,10 +267,7 @@ class MediaEngine {
     return {
       cancel: () => {
         this.clearTimer();
-        try {
-          el.pause();
-          el.muted = true;
-        } catch { /* ignore */ }
+        this.pauseAndMute();
       },
     };
   }
@@ -175,27 +282,31 @@ class MediaEngine {
   ): MediaSegmentControl {
     this.clearTimer();
 
-    const el = this.mediaElement;
-    if (!el) {
+    if (this.mode === 'html5' && this.html5Element) {
+      try {
+        this.html5Element.currentTime = Math.max(0, revealStartTime);
+        this.html5Element.muted = false;
+        this.html5Element.volume = 0.85;
+        this.html5Element.play().catch((err) => console.warn('[MediaEngine] HTML5 reveal error:', err));
+      } catch (e) {
+        console.warn('[MediaEngine] Error seeking HTML5 reveal:', e);
+      }
+    } else if (this.mode === 'youtube' && this.ytPlayer) {
+      try {
+        this.ytPlayer.seekTo(revealStartTime, true);
+        this.ytPlayer.unMute();
+        this.ytPlayer.setVolume(85);
+        this.ytPlayer.playVideo();
+      } catch (e) {
+        console.warn('[MediaEngine] Error seeking YouTube reveal:', e);
+      }
+    } else {
       if (onEnd) onEnd();
       return { cancel: () => {} };
     }
 
-    try {
-      el.currentTime = Math.max(0, revealStartTime);
-      el.muted = false;
-      el.volume = 0.85;
-      el.play().catch((err) => {
-        console.warn('[MediaEngine] Play reveal failed:', err);
-      });
-    } catch (e) {
-      console.warn('[MediaEngine] Error seeking reveal:', e);
-    }
-
     this.segmentTimeout = window.setTimeout(() => {
-      try {
-        el.pause();
-      } catch { /* ignore */ }
+      this.stop();
       this.segmentTimeout = null;
       if (onEnd) onEnd();
     }, durationSec * 1000);
@@ -203,9 +314,7 @@ class MediaEngine {
     return {
       cancel: () => {
         this.clearTimer();
-        try {
-          el.pause();
-        } catch { /* ignore */ }
+        this.stop();
       },
     };
   }
@@ -214,9 +323,28 @@ class MediaEngine {
    * Show video frame (during reveal)
    */
   showVideo(): void {
-    if (this.mediaElement) {
-      this.mediaElement.classList.remove('opacity-0');
-      this.mediaElement.classList.add('opacity-100');
+    if (this.mode === 'html5' && this.html5Element) {
+      this.html5Element.classList.remove('opacity-0');
+      this.html5Element.classList.add('opacity-100');
+    }
+    const ytEl = document.getElementById('yt-fallback-embed');
+    if (ytEl) {
+      ytEl.classList.remove('opacity-0');
+      ytEl.classList.add('opacity-100');
+    }
+  }
+
+  private pauseAndMute(): void {
+    if (this.mode === 'html5' && this.html5Element) {
+      try {
+        this.html5Element.pause();
+        this.html5Element.muted = true;
+      } catch { /* ignore */ }
+    } else if (this.mode === 'youtube' && this.ytPlayer) {
+      try {
+        this.ytPlayer.pauseVideo();
+        this.ytPlayer.mute();
+      } catch { /* ignore */ }
     }
   }
 
@@ -225,28 +353,30 @@ class MediaEngine {
    */
   stop(): void {
     this.clearTimer();
-    if (this.mediaElement) {
-      try {
-        this.mediaElement.pause();
-        this.mediaElement.muted = true;
-      } catch { /* ignore */ }
-    }
+    this.pauseAndMute();
   }
 
   /**
-   * Destroy and clean up DOM element
+   * Destroy and clean up elements
    */
   destroy(): void {
     this.stop();
-    if (this.mediaElement) {
+    if (this.html5Element) {
       try {
-        this.mediaElement.pause();
-        this.mediaElement.removeAttribute('src');
-        this.mediaElement.load();
-        this.mediaElement.remove();
+        this.html5Element.pause();
+        this.html5Element.removeAttribute('src');
+        this.html5Element.load();
+        this.html5Element.remove();
       } catch { /* ignore */ }
-      this.mediaElement = null;
+      this.html5Element = null;
     }
+    if (this.ytPlayer) {
+      try {
+        this.ytPlayer.destroy();
+      } catch { /* ignore */ }
+      this.ytPlayer = null;
+    }
+    this.mode = null;
   }
 
   private clearTimer(): void {

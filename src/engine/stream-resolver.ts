@@ -8,9 +8,6 @@ export const INVIDIOUS_INSTANCES = [
   'https://inv.nadeko.net',
   'https://invidious.jing.rocks',
   'https://yt.artemislena.eu',
-  'https://invidious.f5.si',
-  'https://invidious.drgns.space',
-  'https://iv.melmac.space',
 ];
 
 // In-memory Cache for resolved stream URLs in the current session
@@ -33,18 +30,30 @@ interface InvidiousResponse {
 
 /**
  * Resolves a YouTube ID into a direct HTML5 stream URL with automatic fallback.
- * @param youtubeId 11-character YouTube video ID
+ * @param youtubeId 11-character YouTube video ID or direct media URL
  * @param type 'audio' | 'video'
- * @param timeoutMs Timeout per instance attempt (default: 3500ms)
+ * @param timeoutMs Timeout per instance attempt (default: 1500ms to prevent game lag)
  */
 export async function resolveStreamUrl(
   youtubeId: string,
   type: 'audio' | 'video',
-  timeoutMs: number = 3500
+  timeoutMs: number = 1500
 ): Promise<string> {
   const cleanId = youtubeId.trim();
   if (!cleanId) {
     throw new Error('ไม่พบ YouTube ID');
+  }
+
+  // If already a direct media URL (.mp3 / .mp4 / .webm), return it directly
+  if (
+    cleanId.startsWith('http') &&
+    (cleanId.endsWith('.mp3') ||
+      cleanId.endsWith('.mp4') ||
+      cleanId.endsWith('.webm') ||
+      cleanId.includes('.mp3?') ||
+      cleanId.includes('.mp4?'))
+  ) {
+    return cleanId;
   }
 
   const cacheKey = `${cleanId}_${type}`;
@@ -53,8 +62,12 @@ export async function resolveStreamUrl(
   }
 
   let lastError: Error | null = null;
+  let corsBlocked = false;
 
   for (const instance of INVIDIOUS_INSTANCES) {
+    // If browser CORS policy blocked the request on this domain, break immediately
+    if (corsBlocked) break;
+
     try {
       const endpoint = `${instance}/api/v1/videos/${encodeURIComponent(cleanId)}`;
       const response = await fetch(endpoint, {
@@ -73,7 +86,6 @@ export async function resolveStreamUrl(
       let chosenUrl = '';
 
       if (type === 'audio') {
-        // Find audio stream from adaptiveFormats
         const audioFormats = (data.adaptiveFormats || []).filter((f) => {
           const mime = (f.type || f.mimeType || '').toLowerCase();
           return (
@@ -84,19 +96,15 @@ export async function resolveStreamUrl(
         });
 
         if (audioFormats.length > 0) {
-          // Prefer audio/mp4 for broad HTML5 audio compatibility
           const preferred =
             audioFormats.find((f) =>
               (f.type || f.mimeType || '').toLowerCase().startsWith('audio/mp4')
             ) || audioFormats[0];
           chosenUrl = preferred.url;
         } else if (data.formatStreams && data.formatStreams.length > 0) {
-          // Fallback to formatStreams (contains combined audio + video)
           chosenUrl = data.formatStreams[0].url;
         }
       } else {
-        // type === 'video'
-        // formatStreams has combined video + audio (720p / 360p)
         if (data.formatStreams && data.formatStreams.length > 0) {
           const preferred =
             data.formatStreams.find((f) => f.qualityLabel === '720p') ||
@@ -118,7 +126,6 @@ export async function resolveStreamUrl(
       }
 
       if (chosenUrl) {
-        // Resolve relative URLs returned by some Invidious instances
         const fullUrl = chosenUrl.startsWith('http')
           ? chosenUrl
           : `${instance.replace(/\/$/, '')}${chosenUrl.startsWith('/') ? '' : '/'}${chosenUrl}`;
@@ -130,16 +137,24 @@ export async function resolveStreamUrl(
       throw new Error(`ไม่พบสตรีมประเภท ${type} จาก ${instance}`);
     } catch (err) {
       lastError = err as Error;
+      const errMsg = (err as Error).message || '';
+      if (
+        errMsg.includes('Failed to fetch') ||
+        errMsg.includes('CORS') ||
+        errMsg.includes('NetworkError')
+      ) {
+        corsBlocked = true;
+      }
       console.warn(
         `[StreamResolver] Instance ${instance} failed for ${cleanId}:`,
-        (err as Error).message
+        errMsg
       );
     }
   }
 
   throw (
     lastError ||
-    new Error('ไม่สามารถดึง Direct Stream URL จาก Invidious API ทุก instance')
+    new Error('ไม่สามารถดึง Direct Stream URL จาก Invidious API ได้ (ติด CORS / บล็อก IP)')
   );
 }
 

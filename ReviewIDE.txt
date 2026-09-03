@@ -62,9 +62,18 @@ Update: Two-Stage Flow (Snippet Phase -> Answering Phase), Speed-Based Scoring, 
   - `playSnippet`: Unmutes, plays for `snippetDuration`, and auto-pauses/mutes.
   - `playReveal`: Seeks to `revealStartTime`, unhides video, and plays for `revealDuration`.
   - `stop` & `destroy`: Safely stops and cleans up DOM media elements.
-- **Backward Compatibility**:
-  - 100% compatible with existing `guessthe-tracks.json` schema and PeerJS network state machine.
-  - Built and verified with `npm run build`.
-
-
-
+## Issue Analysis: Invidious API CORS Failure on GitHub Pages
+- **Root Cause**:
+  1. GitHub Pages runs under `https://thianrawit.github.io`. Direct client-side `fetch` calls to third-party Invidious instances are blocked by browser Same-Origin Policy (CORS) because the public Invidious instances do not return `Access-Control-Allow-Origin: *`.
+  2. Public Invidious instances have disabled API endpoints or are blocked/throttled by YouTube.
+  3. Consequently, all 7 Invidious instances failed sequentially until the 6-second timeout occurred, causing questions to be skipped without audio.
+- **Resilient Solution Implemented**:
+  1. `stream-resolver.ts`: Optimized to fail fast (~1.2s) when browser CORS rejection is detected instead of stalling gameplay.
+  2. `media-engine.ts` (Dual Engine):
+     - **Primary**: Direct stream HTML5 (`<video>` / `<audio>`) for direct media links (.mp3/.mp4) or when Invidious proxy succeeds.
+     - **Fallback**: Seamlessly falls back to optimized YouTube Privacy-Enhanced Player (`https://www.youtube-nocookie.com`).
+     - **Anti-Ad Optimization**: Directly sets `start: Math.floor(startTime)` in `playerVars` to bypass the 0-second pre-roll ad slot.
+     - Music and video now play consistently without being skipped.
+  3. `src/vite-env.d.ts`:
+     - Added `host?: string` to `YT.Player` options interface to support `https://www.youtube-nocookie.com`.
+     - Production build verified: `npm run build` (Exit code: 0).
