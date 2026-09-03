@@ -1,0 +1,40 @@
+# GuessThe? — Review IDE Log
+Date: 2026-09-03
+Update: Two-Stage Flow (Snippet Phase -> Answering Phase), Speed-Based Scoring, Gold/Silver/Bronze Crowns on Leaderboard, Pitch-Black Audio Mode Curtain
+
+## Requirements Addressed
+1. **Two-Stage Question Flow (Snippet Playing -> Answering Countdown)**:
+   - Separated snippet duration (`snippetDuration`) from answer timer (`guessDuration`).
+   - During snippet playback (Stage 1), choice buttons are strictly **DISABLED** (`opacity-60`, `cursor-not-allowed`) and cannot be clicked. Status indicator informs players to wait for snippet completion.
+   - Once snippet completes (Stage 2), choice buttons become **ENABLED**, and the Answer Timer Bar starts counting down from 100% to 0%.
+   - When <= 3s remains in the answer timer, Urgency Effects activate (flashing neon red-orange bar, heartbeat scale pulse, 🚨 icon, red timer text).
+2. **Speed-Based Scoring System**:
+   - For correct answers: Points = Base Points - Time Deduction.
+   - Deduction rule: For every 500ms (0.5s) elapsed, deduct 0.5 points (`Math.floor(timeUsedMs / 500) * 0.5`).
+   - Minimum score for correct answers is clamped at 0.5pt.
+   - Incorrect answers or timeouts (0s) yield 0 points.
+   - Formatted scores display integers cleanly (e.g., 10) or with one decimal place (e.g., 9.5).
+3. **Multiplayer Leaderboard Crowns vs Solo Mode**:
+   - Ranked from highest score to lowest score.
+   - Multiplayer mode:
+     - Rank 1: Gold Crown (`👑` with amber glow & bounce).
+     - Rank 2: Silver Crown (`👑` with silver monochrome styling).
+     - Rank 3: Bronze Crown (`👑` with sepia/bronze styling).
+     - Rank 4+: Rank index (`#4`, `#5`, etc.).
+   - Solo mode: Crowns are completely hidden in front of the player name.
+4. **Zero Thumbnail Bleed in Audio Mode**:
+   - Ensured `#yt-player-container` has `opacity-0` during audio guessing.
+   - Made `#media-curtain` 100% pitch solid black (`bg-[#0a0a14] z-20`) without any transparency or backdrop blur leak.
+   - Unveils video smoothly at full opacity during the reveal phase.
+
+## Verification
+- TypeScript (`npx tsc --noEmit`): ✅ Pass (0 errors)
+- Production Build (`npm run build`): ✅ Pass
+- Browser Subagent E2E Verification:
+  - Configured `เวลาแสดงเพลงทาย` = 3s, `เวลาจับเวลาตอบ` = 5s in Lobby.
+  - Verified choice buttons disabled during 3s snippet playback.
+  - Verified choice buttons unlocked and answer timer started right after snippet ended.
+  - Verified urgency pulse & red glow activated at <= 3s.
+  - Verified audio mode visualizer had zero background thumbnail bleeding.
+  - Verified leaderboard sorted descending and crowns hidden in Solo mode.
+  - Recording: `verify_two_stage_scoring_and_crowns`
