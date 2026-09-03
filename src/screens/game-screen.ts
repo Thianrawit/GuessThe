@@ -121,6 +121,11 @@ export function renderGameScreen(): void {
     const container = document.createElement('div');
     container.className = 'min-h-[100dvh] flex flex-col px-3 py-3 sm:px-4 sm:py-4';
 
+    // If no active question in memory, try restoring in-progress game session
+    if (!gameController.currentQuestion) {
+      gameController.restoreSession();
+    }
+
     const question = gameController.currentQuestion;
     const totalQ = gameController.totalQuestions;
     const currentIdx = gameController.currentIndex;
@@ -129,7 +134,8 @@ export function renderGameScreen(): void {
     const isHost = peerManager.isHost;
 
     if (!question) {
-      container.innerHTML = '<div class="flex-1 flex items-center justify-center text-text-secondary">ไม่พบคำถาม</div>';
+      // If game finished or no active session, immediately return to home
+      setTimeout(() => navigate('/'), 0);
       return container;
     }
 

@@ -10,11 +10,23 @@ import { renderLobbyScreen } from './screens/lobby-screen';
 import { renderGameScreen } from './screens/game-screen';
 import { renderLeaderboardScreen } from './screens/leaderboard-screen';
 
+import { gameController } from './game/game-controller';
+import { navigate } from './utils/router';
+
 // ── Register Routes ──
 registerRoute('/', () => renderHomeScreen());
 registerRoute('/editor', () => renderTrackEditorScreen());
 registerRoute('/lobby', () => renderLobbyScreen());
-registerRoute('/game', () => renderGameScreen());
+registerRoute('/game', () => {
+  if (!gameController.currentQuestion) {
+    const restored = gameController.restoreSession();
+    if (!restored || !gameController.currentQuestion) {
+      navigate('/');
+      return;
+    }
+  }
+  renderGameScreen();
+});
 registerRoute('/results', () => renderLeaderboardScreen());
 
 // ── 404 Fallback ──

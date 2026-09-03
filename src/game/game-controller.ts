@@ -13,6 +13,16 @@ import { peerManager } from '../network/peer-manager';
 import { generateQuestions } from '../engine/shuffle';
 import { loadPool } from '../engine/track-pool';
 
+interface SavedSession {
+  questions: QuestionSession[];
+  currentIndex: number;
+  config: GameConfig;
+  players: PlayerInfo[];
+  role: 'solo' | 'host' | 'client';
+}
+
+const SESSION_STORAGE_KEY = 'guessthe_active_session';
+
 type PhaseChangeCallback = (phase: GamePhase, data?: unknown) => void;
 
 class GameController {
@@ -135,6 +145,7 @@ class GameController {
       peerManager.broadcast(packet);
     }
 
+    this.saveSession();
     this.startCountdown();
   }
 
@@ -283,6 +294,7 @@ class GameController {
       });
     }
 
+    this.saveSession();
     this.emitPhase('REVEAL', revealData);
   }
 
@@ -325,12 +337,15 @@ class GameController {
     if (this._currentIndex >= this._questions.length) {
       this.gameOver();
     } else {
+      this.saveSession();
       this.startCountdown();
     }
   }
 
   /** Game over */
   private gameOver(): void {
+    this.clearSession();
+
     if (peerManager.role === 'host') {
       peerManager.broadcast({
         type: 'GAME_OVER',
@@ -353,6 +368,8 @@ class GameController {
     correctCounts: Record<string, number>,
     wrongCounts: Record<string, number>
   ): void {
+    this.clearSession();
+
     for (const [peerId, score] of Object.entries(finalScores)) {
       const player = this._players.get(peerId);
       if (player) {
@@ -386,11 +403,13 @@ class GameController {
       });
     }
 
+    this.saveSession();
     this.startCountdown();
   }
 
   /** Reset to lobby state */
   resetToLobby(): void {
+    this.clearSession();
     this._phase = 'LOBBY';
     this._questions = [];
     this._currentIndex = 0;
@@ -403,9 +422,77 @@ class GameController {
 
   /** Full cleanup */
   destroy(): void {
+    this.clearSession();
     this.resetToLobby();
     this._players.clear();
     this._phaseCallback = null;
+  }
+
+  /** Save active game state to sessionStorage */
+  saveSession(): void {
+    if (this._questions.length === 0 || this._currentIndex >= this._questions.length) {
+      this.clearSession();
+      return;
+    }
+    try {
+      const sessionData: SavedSession = {
+        questions: this._questions,
+        currentIndex: this._currentIndex,
+        config: this._config,
+        players: this.players,
+        role: peerManager.role,
+      };
+      sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionData));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Clear saved game session */
+  clearSession(): void {
+    try {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Restore game session if still in progress */
+  restoreSession(): boolean {
+    try {
+      const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+      if (!raw) return false;
+      const data: SavedSession = JSON.parse(raw);
+      if (
+        !data ||
+        !Array.isArray(data.questions) ||
+        data.questions.length === 0 ||
+        typeof data.currentIndex !== 'number' ||
+        data.currentIndex >= data.questions.length
+      ) {
+        this.clearSession();
+        return false;
+      }
+
+      // If it was multiplayer (host/client), the WebRTC connection was severed on refresh
+      if (data.role !== 'solo') {
+        this.clearSession();
+        return false;
+      }
+
+      this._questions = data.questions;
+      this._currentIndex = data.currentIndex;
+      this._config = data.config;
+      this._players.clear();
+      data.players.forEach((p) => {
+        this._players.set(p.peerId, p);
+      });
+      this._phase = 'COUNTDOWN';
+      return true;
+    } catch {
+      this.clearSession();
+      return false;
+    }
   }
 }
 

@@ -77,3 +77,17 @@ Update: Two-Stage Flow (Snippet Phase -> Answering Phase), Speed-Based Scoring, 
   3. `src/vite-env.d.ts`:
      - Added `host?: string` to `YT.Player` options interface to support `https://www.youtube-nocookie.com`.
      - Production build verified: `npm run build` (Exit code: 0).
+
+## Page Reload Handling & Session Persistence
+- **Problem**: When user reloads the browser at `#/game`, the in-memory state is wiped, getting stuck at `#/game` with "ไม่พบคำถาม".
+- **Solution**:
+  1. `src/game/game-controller.ts`:
+     - Added `SavedSession` persistence to `sessionStorage`.
+     - `saveSession()`: Persists active questions, current index, config, and player scores whenever game starts or updates.
+     - `restoreSession()`: If refreshed while game is in progress (`currentIndex < totalQuestions`), automatically restores the solo session so player stays in the game.
+     - `clearSession()`: Automatically clears session on `gameOver()`, `resetToLobby()`, or `destroy()`.
+  2. `src/main.ts` & `src/screens/game-screen.ts`:
+     - Route `/game` checks if an active question exists or if a session can be restored.
+     - If game has ended or cannot be restored, automatically redirects immediately to `#/` (home) instead of getting stuck on `#/game`.
+- Verified with `npm.cmd run build` (Exit code: 0).
+
