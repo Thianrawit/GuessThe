@@ -1,116 +1,28 @@
-# GuessThe? — Review IDE Log
-Date: 2026-09-03
-Update: Two-Stage Flow (Snippet Phase -> Answering Phase), Speed-Based Scoring, Gold/Silver/Bronze Crowns on Leaderboard, Pitch-Black Audio Mode Curtain
+== GuessThe? Bug Fix Review — 2026-09-04 ==
 
-## Requirements Addressed
-1. **Two-Stage Question Flow (Snippet Playing -> Answering Countdown)**:
-   - Separated snippet duration (`snippetDuration`) from answer timer (`guessDuration`).
-   - During snippet playback (Stage 1), choice buttons are strictly **DISABLED** (`opacity-60`, `cursor-not-allowed`) and cannot be clicked. Status indicator informs players to wait for snippet completion.
-   - Once snippet completes (Stage 2), choice buttons become **ENABLED**, and the Answer Timer Bar starts counting down from 100% to 0%.
-   - When <= 3s remains in the answer timer, Urgency Effects activate (flashing neon red-orange bar, heartbeat scale pulse, 🚨 icon, red timer text).
-2. **Speed-Based Scoring System**:
-   - For correct answers: Points = Base Points - Time Deduction.
-   - Deduction rule: For every 500ms (0.5s) elapsed, deduct 0.5 points (`Math.floor(timeUsedMs / 500) * 0.5`).
-   - Minimum score for correct answers is clamped at 0.5pt.
-   - Incorrect answers or timeouts (0s) yield 0 points.
-   - Formatted scores display integers cleanly (e.g., 10) or with one decimal place (e.g., 9.5).
-3. **Multiplayer Leaderboard Crowns vs Solo Mode**:
-   - Ranked from highest score to lowest score.
-   - Multiplayer mode:
-     - Rank 1: Gold Crown (`👑` with amber glow & bounce).
-     - Rank 2: Silver Crown (`👑` with silver monochrome styling).
-     - Rank 3: Bronze Crown (`👑` with sepia/bronze styling).
-     - Rank 4+: Rank index (`#4`, `#5`, etc.).
-   - Solo mode: Crowns are completely hidden in front of the player name.
-4. **Zero Thumbnail Bleed in Audio Mode**:
-   - Ensured `#yt-player-container` has `opacity-0` during audio guessing.
-   - Made `#media-curtain` 100% pitch solid black (`bg-[#0a0a14] z-20`) without any transparency or backdrop blur leak.
-   - Unveils video smoothly at full opacity during the reveal phase.
+แก้ 4 บั๊กหลัก:
 
-## Verification
-- TypeScript (`npx tsc --noEmit`): ✅ Pass (0 errors)
-- Production Build (`npm run build`): ✅ Pass
-- Browser Subagent E2E Verification:
-  - Configured `เวลาแสดงเพลงทาย` = 3s, `เวลาจับเวลาตอบ` = 5s in Lobby.
-  - Verified choice buttons disabled during 3s snippet playback.
-  - Verified choice buttons unlocked and answer timer started right after snippet ended.
-  - Verified urgency pulse & red glow activated at <= 3s.
-  - Verified audio mode visualizer had zero background thumbnail bleeding.
-  - Verified leaderboard sorted descending and crowns hidden in Solo mode.
-  - Recording: `verify_two_stage_scoring_and_crowns`
+1. [FIX] 404 on GitHub Pages SPA routing (/GuessThe/main)
+   - ไฟล์: public/404.html, src/utils/router.ts
+   - สาเหตุ: GitHub Pages ไม่มี server-side routing → /GuessThe/main ไม่มีไฟล์จริง → 404
+   - แก้: 404.html เก็บ path ใน sessionStorage แล้ว redirect ไป index.html → router.ts อ่าน path จาก sessionStorage แล้ว navigate ไป route ที่ถูกต้อง
+   - รองรับ deep link ทุก route (เช่น /main, /lobby, /editor)
 
-## GitHub Deployment
-- **Repository**: https://github.com/Thianrawit/GuessThe
-- **GitHub Pages URL**: https://thianrawit.github.io/GuessThe/
-- **Mode Support**: Both Singleplayer and Online Multiplayer (PeerJS P2P) verified working seamlessly.
+2. [FIX] ลดโฆษณา YouTube
+   - ไฟล์: src/engine/media-engine.ts
+   - แก้: เพิ่ม Invidious stream resolve timeout จาก 1200ms → 3000ms เพื่อให้ Direct Stream (ไม่มีโฆษณา) มีโอกาส resolve ได้มากขึ้นก่อน fallback ไป YouTube IFrame
+   - หมายเหตุ: ไม่สามารถกำจัดโฆษณา YouTube ได้ 100% เพราะ YouTube ควบคุม ads ฝั่ง server
 
-## Documentation (can.txt)
-- Created `can.txt` documenting all game features, menus, buttons, gameplay flow, scoring rules, network architecture, and full directory tree.
+3. [FIX] Config ไม่ apply ตอนเล่น Online (สร้างห้อง)
+   - ไฟล์: src/screens/lobby-screen.ts
+   - สาเหตุ: เมื่อ player join → renderLobbyContent() ถูกเรียกซ้ำ → container.innerHTML reset select elements กลับค่า default
+   - แก้: เพิ่ม saveConfigFromDOM() + restoreConfigToDOM() เพื่อ persist ค่า config ของ user ข้าม re-render
+   - ลบ hardcoded `selected` attribute ออกจาก option elements → ใช้ JavaScript .value = savedValue แทน
 
-## Media Streaming Refactoring (Ad-Free Hybrid Architecture)
-- **Problem Solved**: Eliminated annoying YouTube pre-roll ads during real gameplay while keeping YouTube URL compatibility.
-- **Hybrid Architecture**:
-  1. `src/screens/track-editor-screen.ts`: Kept YouTube IFrame API & oEmbed for easy title fetching and visual timeline timeline scrubbing.
-  2. `src/screens/game-screen.ts`: Switched to HTML5 Media Engine (`<video>` / `<audio>`) utilizing direct stream URLs (.mp4 / .webm).
-- **New Module `src/engine/stream-resolver.ts`**:
-  - Automatically converts YouTube ID to direct HTML5 stream URL via Invidious API with fallback instances (`invidious.nerdvpn.de`, `inv.nadeko.net`, `invidious.jing.rocks`, `yt.artemislena.eu`, etc.).
-  - 3.5-second request timeout per instance.
-  - In-memory cache (`Map<string, string>`) to avoid redundant requests during a game round.
-  - Formats: adaptive audio (`audio/mp4` / `audio/webm`) for audio-only and `formatStreams` (720p/360p) for MV mode.
-- **New Module `src/engine/media-engine.ts`**:
-  - `initAndPrebuffer`: Fetches direct stream and prebuffers at `startTime` during 3-2-1 countdown.
-  - `playSnippet`: Unmutes, plays for `snippetDuration`, and auto-pauses/mutes.
-  - `playReveal`: Seeks to `revealStartTime`, unhides video, and plays for `revealDuration`.
-  - `stop` & `destroy`: Safely stops and cleans up DOM media elements.
-## Issue Analysis: Invidious API CORS Failure on GitHub Pages
-- **Root Cause**:
-  1. GitHub Pages runs under `https://thianrawit.github.io`. Direct client-side `fetch` calls to third-party Invidious instances are blocked by browser Same-Origin Policy (CORS) because the public Invidious instances do not return `Access-Control-Allow-Origin: *`.
-  2. Public Invidious instances have disabled API endpoints or are blocked/throttled by YouTube.
-  3. Consequently, all 7 Invidious instances failed sequentially until the 6-second timeout occurred, causing questions to be skipped without audio.
-- **Resilient Solution Implemented**:
-  1. `stream-resolver.ts`: Optimized to fail fast (~1.2s) when browser CORS rejection is detected instead of stalling gameplay.
-  2. `media-engine.ts` (Dual Engine):
-     - **Primary**: Direct stream HTML5 (`<video>` / `<audio>`) for direct media links (.mp3/.mp4) or when Invidious proxy succeeds.
-     - **Fallback**: Seamlessly falls back to optimized YouTube Privacy-Enhanced Player (`https://www.youtube-nocookie.com`).
-     - **Anti-Ad Optimization**: Directly sets `start: Math.floor(startTime)` in `playerVars` to bypass the 0-second pre-roll ad slot.
-     - Music and video now play consistently without being skipped.
-  3. `src/vite-env.d.ts`:
-     - Added `host?: string` to `YT.Player` options interface to support `https://www.youtube-nocookie.com`.
-     - Production build verified: `npm run build` (Exit code: 0).
+4. [FIX] เล่นคนเดียวไม่ได้ — #media-player-container ไม่พบ
+   - ไฟล์: src/screens/game-screen.ts, src/engine/media-engine.ts
+   - สาเหตุ: DOM timing issue — initGameFlow() ถูกเรียกก่อนที่ DOM element จะถูก mount เข้า document
+   - แก้ game-screen.ts: เพิ่ม waitForElement() helper ใช้ requestAnimationFrame polling รอ element ก่อนเริ่ม flow (timeout 2s)
+   - แก้ media-engine.ts: เพิ่ม retry loop ใน initAndPrebuffer() — รอ container ปรากฏ (retry 10 ครั้ง x 100ms = 1s)
 
-## Page Reload Handling & Session Persistence
-- **Problem**: When user reloads the browser at `#/game`, the in-memory state is wiped, getting stuck at `#/game` with "ไม่พบคำถาม".
-- **Solution**:
-  1. `src/game/game-controller.ts`:
-     - Added `SavedSession` persistence to `sessionStorage`.
-     - `saveSession()`: Persists active questions, current index, config, and player scores whenever game starts or updates.
-     - `restoreSession()`: If refreshed while game is in progress (`currentIndex < totalQuestions`), automatically restores the solo session so player stays in the game.
-     - `clearSession()`: Automatically clears session on `gameOver()`, `resetToLobby()`, or `destroy()`.
-  2. `src/main.ts` & `src/screens/game-screen.ts`:
-     - Route `/game` checks if an active question exists or if a session can be restored.
-     - If game has ended or cannot be restored, automatically redirects immediately to `#/` (home) instead of getting stuck on `#/game`.
-- Verified with `npm.cmd run build` (Exit code: 0).
-
-## Route Refactoring & Auto-Redirect on Refresh
-- **Routing Overhaul**:
-  - Main / Home: `/main` (Migrated away from root `/#` or `/`)
-  - Room / Lobby Setup: `/lobby`
-  - Track Editor / Library: `/editor`
-  - Game Screen: `/game`
-  - Scoreboard / Results: `/results`
-- **Page Reload Behavior**:
-  - Whenever user refreshes or reloads (F5 / browser refresh), `gameController.clearSession()` is called immediately to wipe any stale session data.
-  - Router forcefully redirects to `#/main` on load and when encountering 404 or root `/`.
-  - All back navigation buttons across all screens (`track-editor-screen`, `lobby-screen`, `leaderboard-screen`, `game-screen`) updated from `navigate('/')` to `navigate('/main')`.
-- **Direct Links Migration (HTML5 History API — No Hash /#)**:
-  - Migrated from Hash routing (`/#/...`) to clean Direct Links:
-    - Main: `/main` (formerly `/#` / `/#/main`)
-    - Lobby: `/lobby`
-    - Track Editor: `/editor`
-    - Game: `/game`
-    - Results: `/results`
-  - URL completely purged of `#` and `/#` using `history.pushState` and `history.replaceState`.
-  - Added SPA fallback `public/404.html` for GitHub Pages to auto-redirect any reloads/direct entries directly to `/main`.
-  - Disabled `restoreSession()` and `saveSession()` in `game-controller.ts` and `game-screen.ts` so refreshing during gameplay never resumes a ghost session and immediately resets back to `/main`.
-  - Full E2E browser verification completed: `verify_direct_routing_and_refresh_1788443160089.webp`.
-
+Build: ผ่าน ✅ (tsc + vite build สำเร็จ ไม่มี error)

@@ -35,7 +35,15 @@ class MediaEngine {
     this.stop();
     this.destroy();
 
-    const container = document.getElementById(containerId);
+    // Wait for container to appear in DOM (retry up to 1s)
+    let container = document.getElementById(containerId);
+    if (!container) {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise(r => setTimeout(r, 100));
+        container = document.getElementById(containerId);
+        if (container) break;
+      }
+    }
     if (!container) {
       throw new Error(`Container #${containerId} ไม่พบในหน้าจอ`);
     }
@@ -44,7 +52,7 @@ class MediaEngine {
 
     // ── ATTEMPT 1: Direct HTML5 Stream via Invidious / Direct URL ──
     try {
-      const streamUrl = await resolveStreamUrl(youtubeId || rawUrlOrId, type, 1200);
+      const streamUrl = await resolveStreamUrl(youtubeId || rawUrlOrId, type, 3000);
       if (streamUrl) {
         await this.setupHtml5Player(container, streamUrl, type, startTime);
         this.mode = 'html5';

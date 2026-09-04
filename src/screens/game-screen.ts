@@ -16,6 +16,24 @@ let currentTimerCancel: (() => void) | null = null;
 let hasRevealedCurrentQuestion = false;
 let activeFlowId = 0;
 
+/** Wait for an element to appear in the DOM, polling with requestAnimationFrame */
+function waitForElement(id: string, timeoutMs: number = 2000): Promise<void> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const check = () => {
+      if (document.getElementById(id)) {
+        resolve();
+      } else if (Date.now() - start > timeoutMs) {
+        console.warn(`[GameScreen] waitForElement: #${id} not found after ${timeoutMs}ms, proceeding anyway`);
+        resolve();
+      } else {
+        requestAnimationFrame(check);
+      }
+    };
+    requestAnimationFrame(check);
+  });
+}
+
 function startQuestionTimer(
   durationSec: number,
   onExpire?: () => void
@@ -296,9 +314,11 @@ export function renderGameScreen(): void {
       }
     });
 
-    // Start the game flow with unique flowId
+    // Start the game flow with unique flowId — wait for DOM to be ready
     const currentFlowId = ++activeFlowId;
-    setTimeout(() => initGameFlow(question, currentFlowId), 50);
+    waitForElement('media-player-container', 2000).then(() => {
+      initGameFlow(question, currentFlowId);
+    });
 
     return container;
   });

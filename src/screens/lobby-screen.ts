@@ -23,7 +23,40 @@ export function renderLobbyScreen(): void {
     let isConnecting = mode === 'host' || mode === 'client';
     let errorMsg = '';
 
+    // ── Persist config selections across re-renders ──
+    let savedQuestionCount = 'all';
+    let savedSnippetDuration = '3';
+    let savedGuessDuration = '10';
+    let savedRevealDuration = '5';
+
+    /** Save current config from DOM before re-render destroys the elements */
+    function saveConfigFromDOM(): void {
+      const qc = document.getElementById('select-question-count') as HTMLSelectElement | null;
+      const sd = document.getElementById('select-snippet-duration') as HTMLSelectElement | null;
+      const gd = document.getElementById('select-guess-duration') as HTMLSelectElement | null;
+      const rd = document.getElementById('select-reveal-duration') as HTMLSelectElement | null;
+      if (qc) savedQuestionCount = qc.value;
+      if (sd) savedSnippetDuration = sd.value;
+      if (gd) savedGuessDuration = gd.value;
+      if (rd) savedRevealDuration = rd.value;
+    }
+
+    /** Restore saved config values to select elements after render */
+    function restoreConfigToDOM(): void {
+      const qc = document.getElementById('select-question-count') as HTMLSelectElement | null;
+      const sd = document.getElementById('select-snippet-duration') as HTMLSelectElement | null;
+      const gd = document.getElementById('select-guess-duration') as HTMLSelectElement | null;
+      const rd = document.getElementById('select-reveal-duration') as HTMLSelectElement | null;
+      if (qc) qc.value = savedQuestionCount;
+      if (sd) sd.value = savedSnippetDuration;
+      if (gd) gd.value = savedGuessDuration;
+      if (rd) rd.value = savedRevealDuration;
+    }
+
     function renderLobbyContent(): void {
+      // Save current config before re-render destroys DOM
+      saveConfigFromDOM();
+
       const isSoloOrHost = mode === 'solo' || mode === 'host';
       
       container.innerHTML = `
@@ -132,7 +165,7 @@ export function renderLobbyScreen(): void {
                 <div>
                   <label class="block text-text-muted text-xs mb-1">จำนวนข้อ</label>
                   <select id="select-question-count" class="select-field text-sm">
-                    <option value="all" selected>ทั้งหมด (ตามคลังเพลง)</option>
+                    <option value="all">ทั้งหมด (ตามคลังเพลง)</option>
                     <option value="5">5 ข้อ</option>
                     <option value="10">10 ข้อ</option>
                     <option value="15">15 ข้อ</option>
@@ -144,7 +177,7 @@ export function renderLobbyScreen(): void {
                   <select id="select-snippet-duration" class="select-field text-sm">
                     <option value="1">1 วินาที</option>
                     <option value="2">2 วินาที</option>
-                    <option value="3" selected>3 วินาที (มาตรฐาน)</option>
+                    <option value="3">3 วินาที (มาตรฐาน)</option>
                     <option value="5">5 วินาที</option>
                     <option value="8">8 วินาที</option>
                     <option value="10">10 วินาที</option>
@@ -154,7 +187,7 @@ export function renderLobbyScreen(): void {
                   <label class="block text-text-muted text-xs mb-1">เวลาจับเวลาตอบ</label>
                   <select id="select-guess-duration" class="select-field text-sm">
                     <option value="5">5 วินาที (เร็วมาก)</option>
-                    <option value="10" selected>10 วินาที (มาตรฐาน)</option>
+                    <option value="10">10 วินาที (มาตรฐาน)</option>
                     <option value="15">15 วินาที</option>
                     <option value="20">20 วินาที</option>
                     <option value="30">30 วินาที (ชิลๆ)</option>
@@ -164,7 +197,7 @@ export function renderLobbyScreen(): void {
                   <label class="block text-text-muted text-xs mb-1">เวลาแสดงตอนเฉลย</label>
                   <select id="select-reveal-duration" class="select-field text-sm">
                     <option value="3">3 วินาที</option>
-                    <option value="5" selected>5 วินาที (มาตรฐาน)</option>
+                    <option value="5">5 วินาที (มาตรฐาน)</option>
                     <option value="7">7 วินาที</option>
                     <option value="10">10 วินาที</option>
                     <option value="15">15 วินาที (ดูคลิปยาว)</option>
@@ -191,6 +224,9 @@ export function renderLobbyScreen(): void {
         </div>
       `;
 
+      // Restore saved config values to select elements after DOM is rebuilt
+      restoreConfigToDOM();
+
       // Event listeners
       setTimeout(() => {
         document.getElementById('btn-back-lobby')?.addEventListener('click', () => {
@@ -212,7 +248,7 @@ export function renderLobbyScreen(): void {
 
         // Start game
         document.getElementById('btn-start-game')?.addEventListener('click', () => {
-          // Read config
+          // Read config from DOM (guaranteed fresh since we don't re-render between user change and click)
           const questionCount = (document.getElementById('select-question-count') as HTMLSelectElement)?.value;
           const snippetDuration = parseInt((document.getElementById('select-snippet-duration') as HTMLSelectElement)?.value || '3');
           const guessDuration = parseInt((document.getElementById('select-guess-duration') as HTMLSelectElement)?.value || '10');
@@ -379,3 +415,4 @@ export function renderLobbyScreen(): void {
     return container;
   });
 }
+

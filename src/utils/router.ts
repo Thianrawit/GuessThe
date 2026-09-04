@@ -84,8 +84,26 @@ function handleRouteChange(): void {
 export function initRouter(): void {
   window.addEventListener('popstate', handleRouteChange);
 
-  // เมื่อเปิดหรือรีหน้าเว็บ (F5 / Reload) ให้ตัดปัญหากลับไปที่หน้าหลัก /main เสมอ!
   const basePath = getBasePath();
-  window.history.replaceState(null, '', `${basePath}/main`);
+
+  // Check if we were redirected from GitHub Pages 404.html with a stored path
+  let targetPath = '/main';
+  try {
+    const redirectPath = sessionStorage.getItem('spa_redirect_path');
+    if (redirectPath) {
+      sessionStorage.removeItem('spa_redirect_path');
+      // Extract just the path part (strip query string for replaceState)
+      const pathOnly = redirectPath.split('?')[0] || '/main';
+      targetPath = pathOnly.startsWith('/') ? pathOnly : `/${pathOnly}`;
+    }
+  } catch { /* sessionStorage unavailable */ }
+
+  // Only allow known routes; fallback to /main for unknown paths
+  const knownRoutes = Array.from(routes.keys());
+  if (!knownRoutes.includes(targetPath)) {
+    targetPath = '/main';
+  }
+
+  window.history.replaceState(null, '', `${basePath}${targetPath}`);
   handleRouteChange();
 }
