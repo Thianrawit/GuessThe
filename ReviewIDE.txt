@@ -26,3 +26,4 @@
    - แก้ media-engine.ts: เพิ่ม retry loop ใน initAndPrebuffer() — รอ container ปรากฏ (retry 10 ครั้ง x 100ms = 1s)
 
 Build: ผ่าน ✅ (tsc + vite build สำเร็จ ไม่มี error)
+Git: Push ขึ้น main branch สำเร็จเรียบร้อย (commit: fix: resolve 404 spa routing, ads timeout, lobby config reset, and solo mode container mount)
