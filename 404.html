@@ -4,12 +4,20 @@
     <meta charset="utf-8" />
     <title>GuessThe? — Redirecting...</title>
     <script>
-      // Single Page App redirect for GitHub Pages
-      // When refreshing on /game, /lobby, etc., redirect straight to /main
-      const path = window.location.pathname;
-      const isGitHubPages = path.includes('/GuessThe');
-      const target = isGitHubPages ? '/GuessThe/main' : '/main';
-      window.location.replace(target);
+      // SPA redirect for GitHub Pages
+      // GitHub Pages serves 404.html for all unknown paths.
+      // We store the original path and redirect to index.html so the SPA router handles it.
+      var repo = '/GuessThe';
+      var fullPath = window.location.pathname;
+      // Strip the repo prefix to get the app-level path (e.g. /main, /lobby)
+      var appPath = fullPath;
+      if (fullPath.indexOf(repo) === 0) {
+        appPath = fullPath.slice(repo.length) || '/main';
+      }
+      // Save the intended route so the SPA router can restore it
+      sessionStorage.setItem('spa_redirect_path', appPath + window.location.search);
+      // Redirect to the actual index.html entry point
+      window.location.replace(repo + '/index.html');
     </script>
   </head>
   <body></body>
