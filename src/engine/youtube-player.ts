@@ -3,26 +3,50 @@
    ────────────────────────────────────────────── */
 
 let ytApiReady = false;
-let ytApiPromiseResolve: (() => void) | null = null;
 
-const ytApiPromise = new Promise<void>((resolve) => {
-  if (window.YT && window.YT.Player) {
-    ytApiReady = true;
-    resolve();
-  } else {
-    ytApiPromiseResolve = resolve;
-  }
-});
-
-// Called by YouTube IFrame API
+// Global callback called by YouTube IFrame API
+const prevOnReady = window.onYouTubeIframeAPIReady;
 window.onYouTubeIframeAPIReady = () => {
   ytApiReady = true;
-  if (ytApiPromiseResolve) ytApiPromiseResolve();
+  if (prevOnReady) prevOnReady();
 };
 
-export async function waitForYTApi(): Promise<void> {
-  if (ytApiReady) return;
-  return ytApiPromise;
+export function waitForYTApi(): Promise<void> {
+  if (window.YT && window.YT.Player) {
+    ytApiReady = true;
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve) => {
+    let resolved = false;
+    const done = () => {
+      if (!resolved) {
+        resolved = true;
+        ytApiReady = true;
+        resolve();
+      }
+    };
+
+    const interval = setInterval(() => {
+      if (window.YT && window.YT.Player) {
+        clearInterval(interval);
+        done();
+      }
+    }, 50);
+
+    const existingOnReady = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      if (existingOnReady) existingOnReady();
+      clearInterval(interval);
+      done();
+    };
+
+    // Fallback timeout after 6 seconds
+    setTimeout(() => {
+      clearInterval(interval);
+      done();
+    }, 6000);
+  });
 }
 
 let currentPlayer: YT.Player | null = null;

@@ -25,7 +25,9 @@ export function generateQuestions(
   }
 
   const shuffledPool = fisherYatesShuffle(pool);
-  const questionCount = count === 'all' ? shuffledPool.length : Math.min(count, shuffledPool.length);
+  // Guard against NaN/invalid count (e.g., from undefined DOM reads)
+  const rawCount = count === 'all' ? shuffledPool.length : (typeof count === 'number' && !isNaN(count) ? count : shuffledPool.length);
+  const questionCount = Math.max(1, Math.min(rawCount, shuffledPool.length));
   const selectedTracks = shuffledPool.slice(0, questionCount);
 
   return selectedTracks.map((track) => {

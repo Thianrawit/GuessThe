@@ -23,6 +23,10 @@ export function renderLobbyScreen(): void {
     let isConnecting = mode === 'host' || mode === 'client';
     let errorMsg = '';
 
+    // ── Prevent duplicate event listener registration ──
+    let renderGeneration = 0;
+    let startedGame = false;
+
     // ── Persist config selections across re-renders ──
     let savedQuestionCount = 'all';
     let savedSnippetDuration = '3';
@@ -56,6 +60,7 @@ export function renderLobbyScreen(): void {
     function renderLobbyContent(): void {
       // Save current config before re-render destroys DOM
       saveConfigFromDOM();
+      const thisGeneration = ++renderGeneration;
 
       const isSoloOrHost = mode === 'solo' || mode === 'host';
       
@@ -227,8 +232,9 @@ export function renderLobbyScreen(): void {
       // Restore saved config values to select elements after DOM is rebuilt
       restoreConfigToDOM();
 
-      // Event listeners
+      // Event listeners — only register for the LATEST render to prevent duplicates
       setTimeout(() => {
+        if (thisGeneration !== renderGeneration) return; // Skip stale render
         document.getElementById('btn-back-lobby')?.addEventListener('click', () => {
           peerManager.destroy();
           gameController.destroy();
@@ -246,8 +252,11 @@ export function renderLobbyScreen(): void {
           });
         });
 
-        // Start game
+        // Start game — guarded against double-fire
         document.getElementById('btn-start-game')?.addEventListener('click', () => {
+          if (startedGame) return; // Prevent double-fire from duplicate handlers
+          startedGame = true;
+
           // Read config from DOM (guaranteed fresh since we don't re-render between user change and click)
           const questionCount = (document.getElementById('select-question-count') as HTMLSelectElement)?.value;
           const snippetDuration = parseInt((document.getElementById('select-snippet-duration') as HTMLSelectElement)?.value || '3');
@@ -255,7 +264,7 @@ export function renderLobbyScreen(): void {
           const revealDuration = parseInt((document.getElementById('select-reveal-duration') as HTMLSelectElement)?.value || '5');
 
           gameController.setConfig({
-            questionCount: questionCount === 'all' ? 'all' : parseInt(questionCount),
+            questionCount: questionCount === 'all' ? 'all' : (parseInt(questionCount) || 10),
             snippetDuration,
             guessDuration,
             revealDuration,
@@ -265,6 +274,7 @@ export function renderLobbyScreen(): void {
             gameController.startGame();
             navigate('/game');
           } catch (e) {
+            startedGame = false; // Allow retry on error
             errorMsg = (e as Error).message;
             renderLobbyContent();
           }
@@ -396,7 +406,9 @@ export function renderLobbyScreen(): void {
       switch (packet.type) {
         case 'PLAYER_LIST':
           players = packet.players;
-          gameController.destroy();
+          // Clear existing players and re-populate from authoritative host list
+          // Use resetToLobby instead of destroy to preserve config/callbacks
+          gameController.resetToLobby();
           packet.players.forEach((p) => {
             gameController.addPlayer(p.peerId, p.name, p.isHost);
           });

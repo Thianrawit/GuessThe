@@ -119,6 +119,12 @@ class GameController {
 
   /** HOST: Start the game — generate questions and broadcast */
   startGame(): void {
+    // Guard: prevent double-start (e.g., duplicate click handlers)
+    if (this._phase !== 'LOBBY') {
+      console.warn('[GameController] startGame() called while phase is', this._phase, '— ignoring');
+      return;
+    }
+
     const pool = loadPool();
     if (pool.length < 4) {
       throw new Error('ต้องมีเพลงอย่างน้อย 4 เพลงในคลัง');
@@ -407,6 +413,11 @@ class GameController {
     this.startCountdown();
   }
 
+  /** Clear only the player map */
+  clearPlayers(): void {
+    this._players.clear();
+  }
+
   /** Reset to lobby state */
   resetToLobby(): void {
     this.clearSession();
@@ -414,6 +425,8 @@ class GameController {
     this._questions = [];
     this._currentIndex = 0;
     this._answers.clear();
+    this._answerTimes.clear();
+    this._players.clear();
     if (this._waitTimeout) {
       clearTimeout(this._waitTimeout);
       this._waitTimeout = null;

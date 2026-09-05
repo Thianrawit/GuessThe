@@ -1,29 +1,58 @@
-== GuessThe? Bug Fix Review — 2026-09-04 ==
+Review — Bug Fix: Solo & Multiplayer Game Not Starting
+====================================================
 
-แก้ 4 บั๊กหลัก:
+Root Cause:
+-----------
+renderLobbyContent() ใน lobby-screen.ts ถูกเรียกหลายครั้งตอน init 
+(ครั้งแรก line 422 ก่อน init() + ครั้งที่สอง line 324 หลัง init สำหรับ solo)
 
-1. [FIX] 404 on GitHub Pages SPA routing (/GuessThe/main)
-   - ไฟล์: public/404.html, src/utils/router.ts
-   - สาเหตุ: GitHub Pages ไม่มี server-side routing → /GuessThe/main ไม่มีไฟล์จริง → 404
-   - แก้: 404.html เก็บ path ใน sessionStorage แล้ว redirect ไป index.html → router.ts อ่าน path จาก sessionStorage แล้ว navigate ไป route ที่ถูกต้อง
-   - รองรับ deep link ทุก route (เช่น /main, /lobby, /editor)
+แต่ละครั้ง register event listener ผ่าน setTimeout(() => {...}, 0)
+ผลคือ btn-start-game มี click handler ซ้ำกัน 2+ ชุด
 
-2. [FIX] ลดโฆษณา YouTube
-   - ไฟล์: src/engine/media-engine.ts
-   - แก้: เพิ่ม Invidious stream resolve timeout จาก 1200ms → 3000ms เพื่อให้ Direct Stream (ไม่มีโฆษณา) มีโอกาส resolve ได้มากขึ้นก่อน fallback ไป YouTube IFrame
-   - หมายเหตุ: ไม่สามารถกำจัดโฆษณา YouTube ได้ 100% เพราะ YouTube ควบคุม ads ฝั่ง server
+เมื่อ user กด "เริ่มเกม":
+  Handler 1: startGame() → navigate('/game') → DOM ถูกเปลี่ยนเป็น game screen ✅
+  Handler 2: อ่าน config จาก DOM → แต่ select element ไม่มีแล้ว (DOM ถูกเปลี่ยน)
+    → questionCount = undefined → parseInt(undefined) = NaN
+    → generateQuestions(pool, NaN) → slice(0, NaN) → return []
+    → _questions = [] → currentQuestion = null
+    → navigate('/game') → route guard เจอ currentQuestion === null
+    → redirect ไป /main 💥
 
-3. [FIX] Config ไม่ apply ตอนเล่น Online (สร้างห้อง)
-   - ไฟล์: src/screens/lobby-screen.ts
-   - สาเหตุ: เมื่อ player join → renderLobbyContent() ถูกเรียกซ้ำ → container.innerHTML reset select elements กลับค่า default
-   - แก้: เพิ่ม saveConfigFromDOM() + restoreConfigToDOM() เพื่อ persist ค่า config ของ user ข้าม re-render
-   - ลบ hardcoded `selected` attribute ออกจาก option elements → ใช้ JavaScript .value = savedValue แทน
+เรื่องเดียวกันนี้ทำให้ Multiplayer lobby มีปัญหา player ซ้ำ
+เพราะ event listener ซ้ำกันหลายชุด
 
-4. [FIX] เล่นคนเดียวไม่ได้ — #media-player-container ไม่พบ
-   - ไฟล์: src/screens/game-screen.ts, src/engine/media-engine.ts
-   - สาเหตุ: DOM timing issue — initGameFlow() ถูกเรียกก่อนที่ DOM element จะถูก mount เข้า document
-   - แก้ game-screen.ts: เพิ่ม waitForElement() helper ใช้ requestAnimationFrame polling รอ element ก่อนเริ่ม flow (timeout 2s)
-   - แก้ media-engine.ts: เพิ่ม retry loop ใน initAndPrebuffer() — รอ container ปรากฏ (retry 10 ครั้ง x 100ms = 1s)
+Fixes Applied:
+--------------
+1. lobby-screen.ts: เพิ่ม renderGeneration counter
+   - แต่ละ renderLobbyContent() increment counter
+   - setTimeout callback เช็ค generation ก่อน register listeners
+   - ถ้า generation ไม่ตรง (มี render ใหม่กว่า) → skip ไม่ register
+   
+2. lobby-screen.ts: เพิ่ม startedGame flag
+   - กัน double-fire ของ start button
+   - reset เมื่อ error เพื่อให้ retry ได้
 
-Build: ผ่าน ✅ (tsc + vite build สำเร็จ ไม่มี error)
-Git: Push ขึ้น main branch สำเร็จเรียบร้อย (commit: fix: resolve 404 spa routing, ads timeout, lobby config reset, and solo mode container mount)
+3. lobby-screen.ts: parseInt fallback
+   - questionCount === 'all' ? 'all' : (parseInt(questionCount) || 10)
+   - กัน NaN จาก undefined DOM reads
+
+4. game-controller.ts: เพิ่ม phase guard ใน startGame()
+   - ถ้า phase !== 'LOBBY' → ignore (ป้องกัน double-start)
+
+5. shuffle.ts: เพิ่ม NaN guard ใน generateQuestions()
+   - ถ้า count เป็น NaN/invalid → fallback ใช้ pool ทั้งหมด
+   - Math.max(1, ...) guarantee อย่างน้อย 1 question
+
+6. lobby-screen.ts: PLAYER_LIST handler
+   - เปลี่ยน gameController.destroy() → gameController.resetToLobby()
+   - destroy() จะ wipe config/callbacks ด้วย ซึ่งไม่ถูกต้อง
+
+7. game-controller.ts: resetToLobby() ปรับปรุง
+   - เพิ่ม _answerTimes.clear() + _players.clear()
+   - เพิ่ม clearPlayers() method ใหม่
+
+Test Results:
+-------------
+- Solo mode: เล่นได้ ไม่ redirect กลับ /main ✅
+- Question progression: 1/10 → 2/10 → ... ✅
+- TypeScript compilation: clean ✅

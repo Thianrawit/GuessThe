@@ -135,28 +135,24 @@ export function renderGameScreen(): void {
   mediaEngine.stop();
   hasRevealedCurrentQuestion = false;
 
+  // Capture question data BEFORE setScreen so we can use it after DOM mount
+  const question = gameController.currentQuestion;
+  const isHost = peerManager.isHost;
+
   setScreen(() => {
     const container = document.createElement('div');
     container.className = 'min-h-[100dvh] flex flex-col px-3 py-3 sm:px-4 sm:py-4';
 
     // If no active question in memory (e.g. reload or ended), return to /main
-    if (!gameController.currentQuestion) {
+    if (!question) {
       setTimeout(() => navigate('/main'), 0);
       return container;
     }
 
-    const question = gameController.currentQuestion;
     const totalQ = gameController.totalQuestions;
     const currentIdx = gameController.currentIndex;
     const players = gameController.players;
     const config = gameController.config;
-    const isHost = peerManager.isHost;
-
-    if (!question) {
-      // If game finished or no active session, immediately return to home
-      setTimeout(() => navigate('/main'), 0);
-      return container;
-    }
 
     container.innerHTML = `
       <!-- Header: Progress + Scoreboard -->
@@ -314,14 +310,18 @@ export function renderGameScreen(): void {
       }
     });
 
-    // Start the game flow with unique flowId — wait for DOM to be ready
-    const currentFlowId = ++activeFlowId;
-    waitForElement('media-player-container', 2000).then(() => {
-      initGameFlow(question, currentFlowId);
-    });
-
     return container;
   });
+
+  // ── AFTER setScreen: DOM is now mounted, #media-player-container exists ──
+  // Start the game flow ONLY if we have a valid question
+  if (question) {
+    const currentFlowId = ++activeFlowId;
+    // Use queueMicrotask to ensure setScreen's appendChild is fully flushed
+    queueMicrotask(() => {
+      initGameFlow(question, currentFlowId);
+    });
+  }
 }
 
 async function initGameFlow(question: QuestionSession, flowId: number): Promise<void> {
@@ -330,7 +330,7 @@ async function initGameFlow(question: QuestionSession, flowId: number): Promise<
   let playerFailed = false;
 
   try {
-    // 1. Resolve Direct Stream URL & Prebuffer HTML5 Media Player with 6-second timeout
+    // 1. Resolve Direct Stream URL & Prebuffer Media Player with 8-second timeout
     await Promise.race([
       mediaEngine.initAndPrebuffer(
         'media-player-container',
@@ -339,13 +339,13 @@ async function initGameFlow(question: QuestionSession, flowId: number): Promise<
         question.startTime
       ),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('โหลดคลิปเกินกำหนด ข้ามไปเล่นต่อทันที')), 6000)
+        setTimeout(() => reject(new Error('โหลดคลิปเกินกำหนด ข้ามไปเล่นต่อทันที')), 8000)
       )
     ]);
     if (activeFlowId !== flowId) return;
   } catch (e) {
-    // Media player failed or timed out (> 6s)
-    console.warn('HTML5 media player failed or timed out (>6s), continuing without media:', e);
+    // Media player failed or timed out (> 8s)
+    console.warn('Media player failed or timed out, continuing without media:', e);
     playerFailed = true;
 
     // Show error in media container
@@ -392,7 +392,7 @@ async function initGameFlow(question: QuestionSession, flowId: number): Promise<
   countdownCancel = cancel;
 }
 
-/** Guessing phase without media (when YouTube embed is blocked or timed out >5s) */
+/** Guessing phase without media (when YouTube embed is blocked or timed out) */
 function startGuessingPhaseNoMedia(question: QuestionSession): void {
   const config = gameController.config;
   const snippetSec = config.snippetDuration || 3;
@@ -434,9 +434,6 @@ function startGuessingPhaseNoMedia(question: QuestionSession): void {
       if (!hasAnswered) {
         hasAnswered = true;
         gameController.submitAnswer(myPeerId, -1, answerSec * 1000);
-        if (peerManager.role === 'solo') {
-          setTimeout(() => showRevealNoMedia(question), 600);
-        }
       }
     });
 
@@ -447,7 +444,7 @@ function startGuessingPhaseNoMedia(question: QuestionSession): void {
         hasAnswered = true;
         const timeUsedMs = Date.now() - answerStartTime;
         const index = parseInt(btn.getAttribute('data-index') || '0');
-        handleChoiceClickNoMedia(index, question, timeUsedMs);
+        handleChoiceClickNoMedia(index, timeUsedMs);
       };
     });
   }, snippetSec * 1000);
@@ -457,7 +454,7 @@ function startGuessingPhaseNoMedia(question: QuestionSession): void {
   }
 }
 
-function handleChoiceClickNoMedia(choiceIndex: number, question: QuestionSession, timeUsedMs: number = 0): void {
+function handleChoiceClickNoMedia(choiceIndex: number, timeUsedMs: number = 0): void {
   if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
   const timerContainer = document.getElementById('timer-container');
   if (timerContainer) timerContainer.classList.remove('timer-urgent-pulse');
@@ -474,86 +471,10 @@ function handleChoiceClickNoMedia(choiceIndex: number, question: QuestionSession
   const secUsed = (timeUsedMs / 1000).toFixed(1);
   if (peerManager.role === 'solo') {
     if (statusText) statusText.textContent = `⏳ ตอบแล้ว (${secUsed}s) กำลังเฉลย...`;
-    gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
-    setTimeout(() => showRevealNoMedia(question), 800);
   } else {
     if (statusText) statusText.textContent = `⏳ ตอบแล้ว (${secUsed}s) กำลังรอผู้เล่นอื่น...`;
-    gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
   }
-}
-
-function showRevealNoMedia(question: QuestionSession): void {
-  if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
-  const timerContainer = document.getElementById('timer-container');
-  if (timerContainer) {
-    timerContainer.classList.remove('timer-urgent-pulse');
-    timerContainer.classList.add('opacity-40');
-  }
-  const timerBar = document.getElementById('timer-progress-bar');
-  if (timerBar) {
-    timerBar.style.width = '0%';
-    timerBar.classList.remove('timer-urgent-bar');
-  }
-
-  const config = gameController.config;
-  const answers = gameController.answers;
-  const players = gameController.players;
-  const statusText = document.getElementById('status-text');
-
-  if (statusText) statusText.textContent = `🎵 เฉลย: ${question.title}`;
-
-  // Update choice buttons
-  const buttons = document.querySelectorAll('.choice-btn') as NodeListOf<HTMLButtonElement>;
-  buttons.forEach((btn, i) => {
-    btn.disabled = true;
-    btn.classList.remove('selected');
-    if (i === question.correctIndex) {
-      btn.classList.add('correct');
-    } else {
-      const pickedByAnyone = Object.values(answers).includes(i);
-      if (pickedByAnyone) btn.classList.add('wrong');
-    }
-
-    const playersWhoChose = Object.entries(answers)
-      .filter(([, choice]) => choice === i)
-      .map(([peerId]) => {
-        const p = players.find((pl) => pl.peerId === peerId);
-        return p?.name || peerId.substring(0, 6);
-      });
-
-    if (playersWhoChose.length > 0) {
-      const badgesContainer = document.getElementById(`badges-${i}`);
-      if (badgesContainer) {
-        badgesContainer.classList.remove('hidden');
-        badgesContainer.innerHTML = playersWhoChose.map((name) => `
-          <span class="player-badge">${name}</span>
-        `).join('');
-        btn.appendChild(badgesContainer);
-      }
-    }
-  });
-
-  // Update scoreboard with formatted scores
-  players.forEach((p) => {
-    const scoreEl = document.getElementById(`score-val-${p.peerId.replace(/[^a-zA-Z0-9]/g, '_')}`);
-    if (scoreEl) {
-      const formatted = Number.isInteger(p.score) ? String(p.score) : p.score.toFixed(1);
-      scoreEl.textContent = formatted;
-      scoreEl.parentElement?.classList.add('score-update');
-      setTimeout(() => scoreEl.parentElement?.classList.remove('score-update'), 500);
-    }
-  });
-
-  setTimeout(() => {
-    if (peerManager.isHost || peerManager.role === 'solo') {
-      gameController.nextQuestion();
-      if (gameController.phase === 'GAME_OVER') {
-        navigate('/results');
-      } else {
-        renderGameScreen();
-      }
-    }
-  }, config.revealDuration * 1000);
+  gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
 }
 
 function startGuessingPhase(question: QuestionSession): void {
@@ -623,9 +544,6 @@ function startGuessingPhase(question: QuestionSession): void {
       if (!hasAnswered) {
         hasAnswered = true;
         gameController.submitAnswer(myPeerId, -1, answerSec * 1000);
-        if (peerManager.role === 'solo') {
-          setTimeout(() => showReveal(question), 600);
-        }
       }
     });
 
@@ -636,7 +554,7 @@ function startGuessingPhase(question: QuestionSession): void {
         hasAnswered = true;
         const timeUsedMs = Date.now() - answerStartTime;
         const index = parseInt(btn.getAttribute('data-index') || '0');
-        handleChoiceClick(index, question, timeUsedMs);
+        handleChoiceClick(index, timeUsedMs);
       };
     });
   });
@@ -648,7 +566,7 @@ function startGuessingPhase(question: QuestionSession): void {
   }
 }
 
-function handleChoiceClick(choiceIndex: number, question: QuestionSession, timeUsedMs: number = 0): void {
+function handleChoiceClick(choiceIndex: number, timeUsedMs: number = 0): void {
   if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
   const timerContainer = document.getElementById('timer-container');
   if (timerContainer) timerContainer.classList.remove('timer-urgent-pulse');
@@ -670,12 +588,10 @@ function handleChoiceClick(choiceIndex: number, question: QuestionSession, timeU
   const secUsed = (timeUsedMs / 1000).toFixed(1);
   if (peerManager.role === 'solo') {
     if (statusText) statusText.textContent = `⏳ ตอบแล้ว (${secUsed}s) กำลังเฉลย...`;
-    gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
-    setTimeout(() => showReveal(question), 800);
   } else {
     if (statusText) statusText.textContent = `⏳ ตอบแล้ว (${secUsed}s) กำลังรอผู้เล่นอื่น...`;
-    gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
   }
+  gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
 }
 
 function showReveal(question: QuestionSession): void {
@@ -702,23 +618,25 @@ function showReveal(question: QuestionSession): void {
 
   if (statusText) statusText.textContent = `🎵 เฉลย: ${question.title}`;
 
-  // Uncover video during reveal
-  mediaEngine.showVideo();
-  const playerContainer = document.getElementById('media-player-container');
-  if (playerContainer) {
-    playerContainer.classList.remove('opacity-0');
-    playerContainer.classList.add('opacity-100');
-  }
-  if (curtain) {
-    curtain.classList.add('hidden');
-  }
+  // Uncover video and play reveal audio only if media is ready
+  if (mediaEngine.isReady) {
+    mediaEngine.showVideo();
+    const playerContainer = document.getElementById('media-player-container');
+    if (playerContainer) {
+      playerContainer.classList.remove('opacity-0');
+      playerContainer.classList.add('opacity-100');
+    }
+    if (curtain) {
+      curtain.classList.add('hidden');
+    }
 
-  // Play reveal audio/video continuously for revealDuration
-  const revealStart = (typeof question.revealStartTime === 'number' && question.revealStartTime >= 0)
-    ? question.revealStartTime
-    : question.startTime;
-  const { cancel } = mediaEngine.playReveal(revealStart, config.revealDuration);
-  currentSegmentCancel = cancel;
+    // Play reveal audio/video continuously for revealDuration
+    const revealStart = (typeof question.revealStartTime === 'number' && question.revealStartTime >= 0)
+      ? question.revealStartTime
+      : question.startTime;
+    const { cancel } = mediaEngine.playReveal(revealStart, config.revealDuration);
+    currentSegmentCancel = cancel;
+  }
 
   // Update choice buttons — correct/wrong + player badges
   const buttons = document.querySelectorAll('.choice-btn') as NodeListOf<HTMLButtonElement>;
