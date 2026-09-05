@@ -846,16 +846,30 @@ function showReveal(question: QuestionSession): void {
   }
 
   // Highlight correct / wrong answers
+  const myPeerId = peerManager.peerId || 'local';
+  const myChoice = answers[myPeerId] as number | undefined;
+  const iAnsweredCorrectly = myChoice === question.correctIndex;
+
   const buttons = document.querySelectorAll('.choice-btn') as NodeListOf<HTMLButtonElement>;
   buttons.forEach((btn, i) => {
     btn.disabled = true;
     btn.classList.remove('selected');
 
     if (i === question.correctIndex) {
+      // Always highlight correct answer green
       btn.classList.add('correct');
+    } else if (iAnsweredCorrectly) {
+      // Player got it right → dim other buttons, no red anywhere
+      btn.style.opacity = '0.35';
     } else {
-      const pickedByAnyone = Object.values(answers).includes(i);
-      if (pickedByAnyone) btn.classList.add('wrong');
+      // Player got it wrong
+      if (i === myChoice) {
+        // Red only on MY wrong choice
+        btn.classList.add('wrong');
+      } else {
+        // Dim all other non-correct, non-chosen buttons
+        btn.style.opacity = '0.35';
+      }
     }
 
     // Show badges of who picked what
