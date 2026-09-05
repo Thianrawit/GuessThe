@@ -88,15 +88,15 @@ export function renderGameScreen(): void {
       <div class="w-full max-w-3xl mx-auto mb-3 animate-slide-up" id="media-outer-box">
         <div class="w-full aspect-video bg-black rounded-2xl overflow-hidden relative shadow-2xl border border-border-subtle flex items-center justify-center" id="media-viewport">
           
-          <!-- Anti-Spoiler Header Mask -->
-          <div class="absolute top-0 left-0 right-0 z-30 px-3 py-2 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex items-center justify-between pointer-events-none" id="anti-spoiler-mask">
+          <!-- Anti-Spoiler Header Mask (Solid 100% Opaque Header Bar covering YouTube Title & Avatar) -->
+          <div class="absolute top-0 left-0 right-0 z-30 h-16 sm:h-20 px-3.5 bg-[#0a0a14] border-b border-white/10 flex items-center justify-between pointer-events-none shadow-lg" id="anti-spoiler-mask">
             <div class="flex items-center gap-2">
               <span class="w-2.5 h-2.5 rounded-full ${question?.type === 'video' ? 'bg-accent-blue' : 'bg-accent-purple'} animate-pulse"></span>
               <span class="font-heading font-bold text-xs sm:text-sm text-text-primary tracking-wide">
                 GuessThe? <span class="gradient-text font-semibold">${question?.type === 'video' ? 'MV' : 'Music'}</span>
               </span>
             </div>
-            <span class="text-[10px] sm:text-xs text-accent-purple bg-accent-purple/20 border border-accent-purple/30 px-2.5 py-0.5 rounded-full font-semibold" id="media-type-badge">
+            <span class="text-[10px] sm:text-xs text-accent-purple bg-accent-purple/20 border border-accent-purple/30 px-2.5 py-1 rounded-full font-semibold" id="media-type-badge">
               ${question?.type === 'video' ? '🎬 ทาย MV (ดูคลิป)' : '🎵 ทายเพลง (ฟังเสียง)'}
             </span>
           </div>
@@ -125,9 +125,12 @@ export function renderGameScreen(): void {
             <p class="text-text-muted text-xs" id="curtain-sub">รอฟังเพลงทายให้จบก่อนเริ่มตอบ</p>
           </div>
 
-          <!-- Countdown 3..2..1 Overlay -->
-          <div id="countdown-overlay" class="absolute inset-0 z-40 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center hidden">
-            <div id="countdown-number" class="text-7xl sm:text-8xl font-heading font-black text-transparent bg-clip-text bg-gradient-to-br from-accent-purple via-accent-cyan to-white">3</div>
+          <!-- Countdown 3..2..1 Overlay (100% Solid Black, Zero Faint Video Leak) -->
+          <div id="countdown-overlay" class="absolute inset-0 z-40 bg-[#0a0a14] flex flex-col items-center justify-center hidden">
+            <div class="flex flex-col items-center gap-2">
+              <div id="countdown-number" class="text-7xl sm:text-8xl font-heading font-black text-transparent bg-clip-text bg-gradient-to-br from-accent-purple via-accent-cyan to-white">3</div>
+              <span class="text-xs font-semibold text-text-muted uppercase tracking-widest animate-pulse">เตรียมพร้อม...</span>
+            </div>
           </div>
 
           <!-- Slow Connection Warning Banner -->
@@ -522,6 +525,10 @@ function startQuestionFlow(question: QuestionSession, flowId: number): void {
       } catch {}
     }
   }
+
+  // Ensure media curtain is active during countdown so no video frame leaks
+  const curtain = document.getElementById('media-curtain');
+  if (curtain) curtain.classList.remove('hidden');
 
   // Execute countdown 3..2..1
   runCountdown(flowId, () => {
