@@ -36,6 +36,7 @@ let hasAnsweredCurrent = false;
 
 let currentPlaybackMode: 'html5' | 'youtube' = 'html5';
 let ytPlayerInstance: YT.Player | null = null;
+let currentLoadedVideoId: string | null = null;
 let activeSegmentCancel: (() => void) | null = null;
 
 // Store previous player positions for FLIP animation
@@ -110,8 +111,8 @@ export function renderGameScreen(): void {
             class="w-full h-full object-contain bg-black transition-opacity duration-300 pointer-events-none"
           ></video>
 
-          <!-- YouTube Player Fallback Container -->
-          <div id="game-yt-player-wrap" class="absolute inset-0 w-full h-full bg-black hidden pointer-events-none">
+          <!-- YouTube Player Fallback Container (Persistent, Never display:none) -->
+          <div id="game-yt-player-wrap" class="absolute inset-0 w-full h-full bg-black pointer-events-none transition-opacity duration-300 opacity-0 z-10">
             <div id="game-yt-player" class="w-full h-full"></div>
           </div>
 
@@ -276,20 +277,6 @@ function handleFlowState(flowId: number): void {
   }
 }
 
-async function setupYouTubePlayerFallback(youtubeId: string, startTime: number): Promise<void> {
-  try {
-    const ytWrap = document.getElementById('game-yt-player-wrap');
-    if (ytWrap) {
-      ytWrap.innerHTML = '<div id="game-yt-player" class="w-full h-full"></div>';
-      ytWrap.classList.remove('hidden');
-    }
-    ytPlayerInstance = await createYouTubePlayer('game-yt-player', youtubeId);
-    await prebufferAt(ytPlayerInstance, startTime);
-  } catch (err) {
-    console.warn('[GameScreen] setupYouTubePlayerFallback warning:', err);
-  }
-}
-
 /**
  * ─────────────────────────────────────────────────────────────
  * INITIAL BUFFERING PHASE (10s Hard Timeout & Force Start)
@@ -335,7 +322,18 @@ async function startInitialBuffering(flowId: number, isHost: boolean, myPeerId: 
     } catch (err) {
       console.warn('[InitialBuffering] Invidious direct stream unavailable, switching to YouTube Player fallback:', err);
       currentPlaybackMode = 'youtube';
-      await setupYouTubePlayerFallback(question.youtubeId, question.startTime);
+      const ytWrap = document.getElementById('game-yt-player-wrap');
+      if (ytWrap) {
+        ytWrap.classList.remove('opacity-0');
+        ytWrap.classList.add('opacity-100');
+      }
+      currentLoadedVideoId = question.youtubeId;
+      try {
+        ytPlayerInstance = await createYouTubePlayer('game-yt-player', question.youtubeId, question.startTime);
+        await prebufferAt(ytPlayerInstance, question.startTime);
+      } catch (ytErr) {
+        console.warn('[InitialBuffering] YouTube player fallback warning:', ytErr);
+      }
     } finally {
       if (!hasSignaledReady && activeFlowId === flowId) {
         hasSignaledReady = true;
@@ -475,23 +473,29 @@ function startQuestionFlow(question: QuestionSession, flowId: number): void {
   const ytWrap = document.getElementById('game-yt-player-wrap');
 
   if (currentPlaybackMode === 'html5' && media && media.src) {
-    if (ytWrap) ytWrap.classList.add('hidden');
+    if (ytWrap) {
+      ytWrap.classList.remove('opacity-100');
+      ytWrap.classList.add('opacity-0');
+    }
   } else {
     currentPlaybackMode = 'youtube';
-    if (ytWrap) ytWrap.classList.remove('hidden');
-    // Pre-seek or re-setup YouTube player if needed
-    if (ytPlayerInstance && typeof (ytPlayerInstance as any).loadVideoById === 'function') {
-      try {
-        (ytPlayerInstance as any).loadVideoById({
-          videoId: question.youtubeId,
-          startSeconds: Math.max(0, question.startTime),
-        });
-        prebufferAt(ytPlayerInstance, question.startTime);
-      } catch {
-        setupYouTubePlayerFallback(question.youtubeId, question.startTime);
-      }
+    if (ytWrap) {
+      ytWrap.classList.remove('opacity-0');
+      ytWrap.classList.add('opacity-100');
+    }
+    // Only load if question changed from what is currently cued
+    if (currentLoadedVideoId !== question.youtubeId) {
+      currentLoadedVideoId = question.youtubeId;
+      createYouTubePlayer('game-yt-player', question.youtubeId, question.startTime)
+        .then((p) => {
+          ytPlayerInstance = p;
+          prebufferAt(p, question.startTime);
+        })
+        .catch(() => {});
     } else {
-      setupYouTubePlayerFallback(question.youtubeId, question.startTime);
+      try {
+        ytPlayerInstance?.seekTo(question.startTime, true);
+      } catch {}
     }
   }
 
@@ -580,9 +584,13 @@ async function runSnippetAndAnswering(question: QuestionSession, flowId: number)
     }
   } else if (currentPlaybackMode === 'youtube') {
     const ytWrap = document.getElementById('game-yt-player-wrap');
+    if (ytWrap) {
+      ytWrap.classList.remove('opacity-0');
+      ytWrap.classList.add('opacity-100');
+    }
+
     if (question.type === 'video') {
       if (curtain) curtain.classList.add('hidden');
-      if (ytWrap) ytWrap.classList.remove('hidden');
     } else {
       if (curtain) curtain.classList.remove('hidden');
     }
@@ -606,7 +614,7 @@ async function runSnippetAndAnswering(question: QuestionSession, flowId: number)
       try { media.pause(); } catch {}
     } else if (currentPlaybackMode === 'youtube' && ytPlayerInstance) {
       if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-      try { stopPlayer(ytPlayerInstance); } catch {}
+      try { ytPlayerInstance.pauseVideo(); } catch {}
     }
 
     // Cover video to prevent visual spoiler while answering
@@ -752,7 +760,10 @@ function showReveal(question: QuestionSession): void {
     } catch {}
   } else if (currentPlaybackMode === 'youtube') {
     const ytWrap = document.getElementById('game-yt-player-wrap');
-    if (ytWrap) ytWrap.classList.remove('hidden');
+    if (ytWrap) {
+      ytWrap.classList.remove('opacity-0');
+      ytWrap.classList.add('opacity-100');
+    }
     if (ytPlayerInstance) {
       if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
       activeSegmentCancel = ytPlayReveal(ytPlayerInstance, revealStart, config.revealDuration).cancel;
@@ -802,7 +813,7 @@ function showReveal(question: QuestionSession): void {
       try { media.pause(); } catch {}
     } else if (currentPlaybackMode === 'youtube' && ytPlayerInstance) {
       if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-      try { stopPlayer(ytPlayerInstance); } catch {}
+      try { ytPlayerInstance.pauseVideo(); } catch {}
     }
 
     if (peerManager.isHost || peerManager.role === 'solo') {
@@ -899,6 +910,16 @@ function showIntermediateLeaderboard(): void {
       } catch (err) {
         console.warn('[DoubleBuffering] Direct stream prebuffer failed, using YouTube fallback:', err);
         currentPlaybackMode = 'youtube';
+        if (ytPlayerInstance && typeof (ytPlayerInstance as any).loadVideoById === 'function') {
+          currentLoadedVideoId = nextQuestion.youtubeId;
+          try {
+            (ytPlayerInstance as any).loadVideoById({
+              videoId: nextQuestion.youtubeId,
+              startSeconds: Math.max(0, nextQuestion.startTime),
+            });
+            prebufferAt(ytPlayerInstance, nextQuestion.startTime);
+          } catch {}
+        }
       } finally {
         isPreparingNext = false;
         // Signal ready for next question

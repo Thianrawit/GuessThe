@@ -9,7 +9,10 @@ Review IDE — การแก้ปัญหา StreamResolver & Invidious Fall
 - เมื่อ Invidious ไม่สามารถดึง direct stream ได้ ตัว <video id="game-media"> ไม่มี src ทำให้เกิดข้อผิดพลาดในการเล่นสื่อ และไม่มีเสียง/วิดีโอขึ้นมาในเกม
 - ข้อผิดพลาด `TypeError: Cannot read properties of undefined (reading 'startTime')` เกิดจาก external script/extension (Performance Observer/Web Vitals) ที่พยายามอ่าน PerformanceEntry ใน browser
 - `Failed to execute 'postMessage' on 'DOMWindow'`: เกิดจาก YouTube IFrame API ในโหมด localhost ที่ไม่มีการระบุ `host: 'https://www.youtube.com'` และ `enablejsapi: 1` ทำให้ widget API สับสนเรื่อง origin
-- การ fetch Invidious ซ้ำๆ ในทุกข้อทำให้ DevTools ขึ้น log สีแดงของ CORS policy ไม่หยุด
+- อาการ "เพลงไม่ขึ้น":
+  1) คอนเทนเนอร์ `#game-yt-player-wrap` ถูกเซ็ตสไตล์ `hidden` (`display: none`) ใน HTML และโค้ดเดิมไม่ได้ปลดคลาสออกเมื่อเป็นเพลงประเภท audio ส่งผลให้ Chromium หยุดการทำงานของ IFrame (IFrame execution & audio playback suspended)
+  2) ฟังก์ชัน `startQuestionFlow` ทำการทำลายและสร้าง IFrame ใหม่โดยไม่ได้ await ส่งผลให้ตอนที่ `playSegment` สั่งเล่น ตัวเล่นยังไม่พร้อม หรือถูกทำลายทิ้งไปก่อน
+  3) ใน `createYouTubePlayer` ไม่ได้ส่ง `start` เข้าไปใน `playerVars` ทำให้คลิปพยายามเริ่มเล่นที่ 0 วินาที ซึ่งมักจะติดโฆษณา Pre-roll Ad ของ YouTube
 
 2. สิ่งที่ดำเนินการแก้ไข (Implemented Solutions):
 -----------------------------------------------
@@ -18,24 +21,24 @@ Review IDE — การแก้ปัญหา StreamResolver & Invidious Fall
   * ลด timeout เหลือ 2000ms โดยหากไม่มี instance ใดตอบกลับ จะ reject ทันทีภายใน 2 วินาที ไม่มีการค้าง 14 วินาทีอีกต่อไป
   * เพิ่มตัวแปร `instancesCORSBlocked` จดจำสถานะใน session ทันทีที่ public instances ติด CORS ครั้งแรก ข้อถัดๆ ไปจะไม่ส่ง network request ไปให้ console ขึ้นสีแดงซ้ำซาก และสลับไป YouTube fallback ได้ทันทีใน 0ms
 - ปรับปรุง `src/engine/youtube-player.ts`:
-  * เพิ่ม `host: 'https://www.youtube.com'`, `enablejsapi: 1`, และ `widget_referrer: window.location.href` ใน `createYouTubePlayer` และ `createPreviewPlayer` เพื่อให้ postMessage handshake กับ YouTube API ได้อย่างถูกต้อง
+  * เพิ่ม `host: 'https://www.youtube.com'`, `enablejsapi: 1`, `start: startTime`, และ `widget_referrer: window.location.href` ใน `createYouTubePlayer` และ `createPreviewPlayer`
+  * ปรับให้ `createYouTubePlayer` รองรับการนำ IFrame เดิมกลับมาใช้ซ้ำ (Player Reuse) ผ่านคำสั่ง `loadVideoById` โดยไม่ต้องทำลายและสร้าง IFrame ใหม่ทุกข้อ
+  * ปรับปรุง `prebufferAt` ให้ `unMute()` และตั้งระดับเสียง 100% หลังพรีบัฟเฟอร์เสร็จ เพื่อให้พร้อมเล่นทันทีเมื่อเข้าสู่ Snippet Phase
+  * ปรับปรุง `playSegment` และ `playReveal` ให้ `unMute()`, `setVolume(100)`, และ `seekTo(startTime)` อย่างแม่นยำ
 - ปรับปรุง `src/screens/game-screen.ts`:
-  * ติดตั้งระบบ Resilient Dual Media Fallback: ผสานทั้ง HTML5 <video> สำหรับ Direct Media/Invidious Stream และ YouTube IFrame Player (YT.Player) สำรองใน `#game-yt-player-wrap`
-  * เมื่อ Invidious ไม่ตอบสนอง ระบบจะสลับมาใช้ YouTube Player Fallback ทันทีแบบอัตโนมัติภายใน 2 วินาที
-  * ในช่วง Initial Buffering ระบบจะ prebuffer คลิปที่ startTime ล่วงหน้า และส่งสัญญาณ `signalBufferReady` ให้พร้อมเล่นได้ทันทีภายใน 1-2 วินาที
-  * รองรับทั้งโหมดทายเพลง (Audio Curtain ปิดบังวิดีโอ มี Sound Visualizer) และโหมดทาย MV (เปิดแสดงวิดีโอ)
-  * จัดการช่วง Snippet Playback (หยุดเล่น ปิดม่าน ปลดล็อกปุ่ม A/B/C/D) และ Reveal Phase (เล่นเฉลยต่อเนื่องที่ revealStartTime)
-  * ปรับ Double-Buffering ใน Intermediate Leaderboard ให้ใช้ timeout 2000ms เช่นเดียวกัน
-  * จัดการ cleanupTimers ยกเลิก segment timer และหยุด/ทำลาย YT.Player เมื่อจบเกมหรือเปลี่ยนหน้าอย่างสมบูรณ์
+  * เปลี่ยนคอนเทนเนอร์ `#game-yt-player-wrap` จากการใช้ `hidden` (`display: none`) มาใช้ `opacity-0` / `opacity-100` แทน เพื่อให้ IFrame มีขนาดและทำงานใน DOM ตลอดเวลา ไม่ถูก Browser Freeze เสียง
+  * โหมดทายเพลง (Audio): ใช้ `media-curtain` (`z-20 bg-[#0a0a14]`) ปิดทับภาพวิดีโอไว้ แสดง Audio Visualizer ขณะที่เสียงเพลงเล่นผ่าน YouTube Player เต็ม 100%
+  * โหมดทาย MV (Video): ซ่อน `media-curtain` เพื่อเปิดให้เห็นคลิปภาพวิดีโอ
+  * แก้ไข `startQuestionFlow` ให้ตรวจสอบ `currentLoadedVideoId` ก่อน หากเป็นคลิปเดียวกับที่พรีบัฟเฟอร์ไว้ในขั้นตอน Initial Buffering จะไม่สั่งโหลดซ้ำ ทำให้เพลงเริ่มเล่นได้ทันทีเมื่อนับถอยหลังจบ
+  * เพิ่ม Background Prebuffering ของข้อถัดไปในหน้า Intermediate Leaderboard แบบไร้รอยต่อ
 
 3. ผลการตรวจสอบ (Verification & Test Results):
 ----------------------------------------------
-- `npx.cmd tsc --noEmit`: ผ่าน 100% ไม่มีข้อผิดพลาดทางประเภทข้อมูล (0 errors)
-- `npm.cmd run build`: ผ่าน 100% สร้าง production bundle สมบูรณ์ใน 770ms
-- ทดสอบผ่าน Browser Automation:
-  * เริ่มเกมโหมดเล่นคนเดียว (Solo Mode) เข้าสู่ Initial Buffering
-  * โหลดสื่อและขึ้นสถานะพร้อมภายใน 1-2 วินาที (ไม่มีค้างหรือ timeout)
-  * นับถอยหลัง 3..2..1 และเข้าสู่ข้อ 1 ได้อย่างราบรื่น
-  * เพลงเล่นตาม snippet duration และปลดล็อกปุ่มคำตอบ
-  * ผู้เล่นกดเลือกคำตอบ บันทึกคะแนน และแสดงหน้าเฉลย
-  * เข้าสู่ Intermediate Leaderboard ("🏆 สรุปคะแนน (ข้อ X/10)") พร้อม FLIP card animation และ background pre-buffering ข้อถัดไปอย่างถูกต้อง 100%
+- `npx.cmd tsc --noEmit`: ผ่าน 100% (0 errors)
+- `npm.cmd run build`: ผ่าน 100% (Production bundle สร้างเสร็จสมบูรณ์)
+- ทดสอบการเล่นเกมจริงผ่าน Browser Automation:
+  * เริ่มเกมจาก Solo Lobby -> Initial Buffering โหลดเสร็จใน ~1 วินาที
+  * ข้อ 1: เพลงเล่นทันที (Audio Visualizer ขยับ, เสียงเพลงเล่น, ตัวนับเวลาทำงาน)
+  * หมดเวลาพรีวิว 3 วินาที: ตัวเลือก A, B, C, D ปลดล็อกให้ตอบ
+  * ผู้เล่นคลิกเลือกคำตอบ -> เข้าสู่ Reveal Phase เพลง/คลิปเล่นท่อนเฉลยต่อเนื่อง
+  * เข้าสู่ข้อ 2 และ 3: ระบบทำงานต่อเนื่อง ราบรื่น ไม่ค้าง และมีเสียงเล่นทุกข้อ

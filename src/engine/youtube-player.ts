@@ -139,6 +139,7 @@ export async function fetchYouTubeTitle(urlOrId: string): Promise<{ cleanTitle: 
 export async function createYouTubePlayer(
   containerId: string,
   rawVideoId: string,
+  startTime: number = 0,
   onReady?: () => void
 ): Promise<YT.Player> {
   await waitForYTApi();
@@ -149,6 +150,19 @@ export async function createYouTubePlayer(
     throw new Error('ไม่พบ YouTube Video ID ที่ถูกต้อง');
   }
 
+  // If player already exists and container still has the iframe, reuse it without rebuilding DOM!
+  if (currentPlayer && typeof (currentPlayer as any).loadVideoById === 'function') {
+    try {
+      (currentPlayer as any).loadVideoById({
+        videoId,
+        startSeconds: Math.max(0, Math.floor(startTime)),
+      });
+      return currentPlayer;
+    } catch {
+      // Re-create if reuse fails
+    }
+  }
+
   // Destroy existing player
   if (currentPlayer) {
     try { currentPlayer.destroy(); } catch { /* ignore */ }
@@ -156,6 +170,15 @@ export async function createYouTubePlayer(
   }
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        if (currentPlayer) resolve(currentPlayer);
+        else reject(new Error('YouTube Player initialization timed out'));
+      }
+    }, 4500);
+
     const player = new window.YT.Player(containerId, {
       videoId,
       width: '100%',
@@ -171,6 +194,7 @@ export async function createYouTubePlayer(
         modestbranding: 1,
         playsinline: 1,
         rel: 0,
+        start: Math.max(0, Math.floor(startTime)),
         showinfo: 0,
         cc_load_policy: 0,
         origin: window.location.origin,
@@ -178,19 +202,27 @@ export async function createYouTubePlayer(
       },
       events: {
         onReady: (event) => {
-          currentPlayer = event.target;
-          if (onReady) onReady();
-          resolve(event.target);
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            currentPlayer = event.target;
+            if (onReady) onReady();
+            resolve(event.target);
+          }
         },
         onError: (event) => {
           const code = event.data;
           lastError = code;
           console.warn(`YouTube Player Error ${code}: ${getErrorMessage(code)} (Video: ${videoId})`);
-          // Reject so the game can handle it (skip to reveal, show error, etc.)
-          reject(new Error(getErrorMessage(code)));
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            reject(new Error(getErrorMessage(code)));
+          }
         },
       },
     });
+    currentPlayer = player;
   });
 }
 
@@ -249,15 +281,18 @@ export async function prebufferAt(player: YT.Player, startTime: number): Promise
     player.seekTo(startTime, true);
     player.playVideo();
   } catch {
-    // Player may have been destroyed or errored
     return;
   }
 
   return new Promise((resolve) => {
     setTimeout(() => {
-      try { player.pauseVideo(); } catch { /* ignore */ }
+      try {
+        player.pauseVideo();
+        player.unMute();
+        player.setVolume(100);
+      } catch { /* ignore */ }
       resolve();
-    }, 800);
+    }, 600);
   });
 }
 
@@ -271,11 +306,12 @@ export function playSegment(
   onEnd?: () => void
 ): { cancel: () => void } {
   try {
-    player.seekTo(startTime, true);
     player.unMute();
     player.setVolume(100);
+    player.seekTo(startTime, true);
     player.playVideo();
-  } catch {
+  } catch (err) {
+    console.warn('[YouTubePlayer] playSegment error:', err);
     if (onEnd) onEnd();
     return { cancel: () => {} };
   }
@@ -283,7 +319,6 @@ export function playSegment(
   const timer = setTimeout(() => {
     try {
       player.pauseVideo();
-      player.mute();
     } catch { /* ignore */ }
     if (onEnd) onEnd();
   }, duration * 1000);
@@ -291,7 +326,7 @@ export function playSegment(
   return {
     cancel: () => {
       clearTimeout(timer);
-      try { player.pauseVideo(); player.mute(); } catch { /* ignore */ }
+      try { player.pauseVideo(); } catch { /* ignore */ }
     },
   };
 }
@@ -301,9 +336,9 @@ export function playSegment(
  */
 export function playReveal(player: YT.Player, startTime: number, duration: number): { cancel: () => void } {
   try {
-    player.seekTo(startTime, true);
     player.unMute();
-    player.setVolume(80);
+    player.setVolume(100);
+    player.seekTo(startTime, true);
     player.playVideo();
   } catch {
     return { cancel: () => {} };
