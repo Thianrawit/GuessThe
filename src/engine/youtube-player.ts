@@ -160,10 +160,12 @@ export async function createYouTubePlayer(
       videoId,
       width: '100%',
       height: '100%',
+      host: 'https://www.youtube.com',
       playerVars: {
         autoplay: 0,
         controls: 0,
         disablekb: 1,
+        enablejsapi: 1,
         fs: 0,
         iv_load_policy: 3,
         modestbranding: 1,
@@ -172,6 +174,7 @@ export async function createYouTubePlayer(
         showinfo: 0,
         cc_load_policy: 0,
         origin: window.location.origin,
+        widget_referrer: window.location.href,
       },
       events: {
         onReady: (event) => {
@@ -210,16 +213,19 @@ export async function createPreviewPlayer(
       videoId,
       width: '100%',
       height: '100%',
+      host: 'https://www.youtube.com',
       playerVars: {
         autoplay: 0,
         controls: 1, // Enable playback and timeline controls
         disablekb: 0,
+        enablejsapi: 1,
         fs: 1,
         modestbranding: 1,
         playsinline: 1,
         rel: 0,
         start: Math.max(0, Math.floor(startTime)),
         origin: window.location.origin,
+        widget_referrer: window.location.href,
       },
       events: {
         onReady: (event) => {

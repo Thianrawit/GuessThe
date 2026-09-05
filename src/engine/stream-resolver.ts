@@ -16,6 +16,10 @@ export const INVIDIOUS_INSTANCES = [
 // In-memory Cache for resolved stream URLs in current session
 const streamCache = new Map<string, string>();
 
+// If public Invidious instances fail with CORS or network error, remember for this session
+// to avoid spamming the browser console with repeated CORS policy errors
+let instancesCORSBlocked = false;
+
 interface StreamFormat {
   url: string;
   type?: string;
@@ -62,6 +66,10 @@ export async function resolveStreamUrl(
   const cacheKey = `${cleanId}_${type}`;
   if (streamCache.has(cacheKey)) {
     return streamCache.get(cacheKey)!;
+  }
+
+  if (instancesCORSBlocked) {
+    throw new Error('Invidious public API is currently CORS restricted in this session');
   }
 
   const fetchFromInstance = async (instance: string): Promise<string> => {
@@ -142,6 +150,7 @@ export async function resolveStreamUrl(
     ]);
     return result;
   } catch {
+    instancesCORSBlocked = true;
     throw new Error('ไม่สามารถดึง Direct Stream URL จาก Invidious API ได้ (ทุก instance ไม่ตอบสนอง)');
   }
 }
@@ -149,4 +158,9 @@ export async function resolveStreamUrl(
 /** Clear in-memory cache */
 export function clearStreamCache(): void {
   streamCache.clear();
+}
+
+/** Reset CORS blocked status for session testing */
+export function resetInstancesBlocked(): void {
+  instancesCORSBlocked = false;
 }

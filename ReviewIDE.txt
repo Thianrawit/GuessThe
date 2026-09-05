@@ -8,13 +8,17 @@ Review IDE — การแก้ปัญหา StreamResolver & Invidious Fall
 - อาการที่เกิดคือหน้า Loading (Initial Buffering) ค้างเกิน 10 วินาทีจน trigger hard timeout แล้วยังไม่พร้อม
 - เมื่อ Invidious ไม่สามารถดึง direct stream ได้ ตัว <video id="game-media"> ไม่มี src ทำให้เกิดข้อผิดพลาดในการเล่นสื่อ และไม่มีเสียง/วิดีโอขึ้นมาในเกม
 - ข้อผิดพลาด `TypeError: Cannot read properties of undefined (reading 'startTime')` เกิดจาก external script/extension (Performance Observer/Web Vitals) ที่พยายามอ่าน PerformanceEntry ใน browser
+- `Failed to execute 'postMessage' on 'DOMWindow'`: เกิดจาก YouTube IFrame API ในโหมด localhost ที่ไม่มีการระบุ `host: 'https://www.youtube.com'` และ `enablejsapi: 1` ทำให้ widget API สับสนเรื่อง origin
+- การ fetch Invidious ซ้ำๆ ในทุกข้อทำให้ DevTools ขึ้น log สีแดงของ CORS policy ไม่หยุด
 
 2. สิ่งที่ดำเนินการแก้ไข (Implemented Solutions):
 -----------------------------------------------
 - ปรับปรุง `src/engine/stream-resolver.ts`:
   * เปลี่ยนจากการ fetch แบบ sequential เป็น Concurrent Racing ด้วย `Promise.any` คิวรีทุก instance พร้อมกันแบบคู่ขนาน
   * ลด timeout เหลือ 2000ms โดยหากไม่มี instance ใดตอบกลับ จะ reject ทันทีภายใน 2 วินาที ไม่มีการค้าง 14 วินาทีอีกต่อไป
-  * เพิ่ม instance สำรอง และแคชผลลัพธ์ผ่าน in-memory Map
+  * เพิ่มตัวแปร `instancesCORSBlocked` จดจำสถานะใน session ทันทีที่ public instances ติด CORS ครั้งแรก ข้อถัดๆ ไปจะไม่ส่ง network request ไปให้ console ขึ้นสีแดงซ้ำซาก และสลับไป YouTube fallback ได้ทันทีใน 0ms
+- ปรับปรุง `src/engine/youtube-player.ts`:
+  * เพิ่ม `host: 'https://www.youtube.com'`, `enablejsapi: 1`, และ `widget_referrer: window.location.href` ใน `createYouTubePlayer` และ `createPreviewPlayer` เพื่อให้ postMessage handshake กับ YouTube API ได้อย่างถูกต้อง
 - ปรับปรุง `src/screens/game-screen.ts`:
   * ติดตั้งระบบ Resilient Dual Media Fallback: ผสานทั้ง HTML5 <video> สำหรับ Direct Media/Invidious Stream และ YouTube IFrame Player (YT.Player) สำรองใน `#game-yt-player-wrap`
   * เมื่อ Invidious ไม่ตอบสนอง ระบบจะสลับมาใช้ YouTube Player Fallback ทันทีแบบอัตโนมัติภายใน 2 วินาที
@@ -27,8 +31,8 @@ Review IDE — การแก้ปัญหา StreamResolver & Invidious Fall
 3. ผลการตรวจสอบ (Verification & Test Results):
 ----------------------------------------------
 - `npx.cmd tsc --noEmit`: ผ่าน 100% ไม่มีข้อผิดพลาดทางประเภทข้อมูล (0 errors)
-- `npm.cmd run build`: ผ่าน 100% สร้าง production bundle สมบูรณ์ใน 931ms
-- ทดสอบผ่าน Browser Automation Subagent:
+- `npm.cmd run build`: ผ่าน 100% สร้าง production bundle สมบูรณ์ใน 770ms
+- ทดสอบผ่าน Browser Automation:
   * เริ่มเกมโหมดเล่นคนเดียว (Solo Mode) เข้าสู่ Initial Buffering
   * โหลดสื่อและขึ้นสถานะพร้อมภายใน 1-2 วินาที (ไม่มีค้างหรือ timeout)
   * นับถอยหลัง 3..2..1 และเข้าสู่ข้อ 1 ได้อย่างราบรื่น
