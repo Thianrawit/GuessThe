@@ -5,7 +5,7 @@
     "youtubeId": "Hq_pjxRmn-g",
     "startTime": 145,
     "revealStartTime": 145,
-    "type": "video",
+    "type": "audio",
     "points": 10
   },
   {
@@ -14,7 +14,7 @@
     "youtubeId": "VtUS__tF2EA",
     "startTime": 41,
     "revealStartTime": 162,
-    "type": "video",
+    "type": "audio",
     "points": 10
   },
   {
@@ -23,7 +23,7 @@
     "youtubeId": "c31LQOCmLVU",
     "startTime": 28,
     "revealStartTime": 86,
-    "type": "video",
+    "type": "audio",
     "points": 10
   },
   {
@@ -32,7 +32,7 @@
     "youtubeId": "G2JFOEFmnnI",
     "startTime": 21,
     "revealStartTime": 106,
-    "type": "video",
+    "type": "audio",
     "points": 10
   },
   {
@@ -41,7 +41,7 @@
     "youtubeId": "RXZ5X_LGX9Q",
     "startTime": 35,
     "revealStartTime": 91,
-    "type": "video",
+    "type": "audio",
     "points": 10
   },
   {
@@ -50,7 +50,7 @@
     "youtubeId": "PCmpeFoPzwY",
     "startTime": 9,
     "revealStartTime": 59,
-    "type": "video",
+    "type": "audio",
     "points": 10
   },
   {
@@ -59,7 +59,7 @@
     "youtubeId": "5SZByn3eik0",
     "startTime": 0,
     "revealStartTime": 49,
-    "type": "video",
+    "type": "audio",
     "points": 10
   },
   {
@@ -68,7 +68,7 @@
     "youtubeId": "mSWNvFaYrXY",
     "startTime": 3,
     "revealStartTime": 52,
-    "type": "video",
+    "type": "audio",
     "points": 10
   },
   {
@@ -77,7 +77,7 @@
     "youtubeId": "4J-cyby36g4",
     "startTime": 10,
     "revealStartTime": 45,
-    "type": "video",
+    "type": "audio",
     "points": 10
   },
   {
@@ -86,6 +86,231 @@
     "youtubeId": "SqKJOgFTIjc",
     "startTime": 7,
     "revealStartTime": 47,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "1kwrd3x8",
+    "title": "ชาวนากับงูเห่า - FLY",
+    "youtubeId": "ih3Ftx3rboQ",
+    "startTime": 7,
+    "revealStartTime": 68,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "tt2vy4hg",
+    "title": "ซมซาน -  LOSO",
+    "youtubeId": "2dSGCzeuPlA",
+    "startTime": 18,
+    "revealStartTime": 102,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "fgw1bp0h",
+    "title": "Bedroom Audio - ไม่บอกเธอ Ost.Hormones",
+    "youtubeId": "lFD2eid8Ugw",
+    "startTime": 17,
+    "revealStartTime": 74,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "38lza2j7",
+    "title": "ขี้หึง - Silly Fools",
+    "youtubeId": "Wk2BPFVzvlQ",
+    "startTime": 39,
+    "revealStartTime": 112,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "6c3nd6mo",
+    "title": "เลี้ยงส่ง - So Cool",
+    "youtubeId": "0iuKt11wfic",
+    "startTime": 14,
+    "revealStartTime": 79,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "qeovcu24",
+    "title": "คิดถึงฉันไหมเวลาที่เธอ - TAXI",
+    "youtubeId": "krk9TTf_Ez8",
+    "startTime": 16,
+    "revealStartTime": 98,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "izh8ifie",
+    "title": "[ RAP THAI ] รักเมียที่สุดในโลก - ILLSLICK [ OFFICIALHD ]",
+    "youtubeId": "cnXjl_alRvM",
+    "startTime": 26,
+    "revealStartTime": 83,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "bzbmswma",
+    "title": "กรุณาฟังให้จบ - แช่ม แช่มรัมย์",
+    "youtubeId": "BNw26kVGsis",
+    "startTime": 61,
+    "revealStartTime": 120,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "2ab25d08",
+    "title": "Mocca garden - ผมรักเมืองไทย (I love you Thailand)Feat:Rich reggae",
+    "youtubeId": "WXsV_ZKHcm4",
+    "startTime": 32,
+    "revealStartTime": 48,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "3rgk7vi1",
+    "title": "มหาลัยวัวชน - วงพัทลุง",
+    "youtubeId": "BC_jOWscOSQ",
+    "startTime": 6,
+    "revealStartTime": 94,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "ujisn8ka",
+    "title": "วิทลัย หลายใจ",
+    "youtubeId": "fNEpdjPG2D8",
+    "startTime": 14,
+    "revealStartTime": 69,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "xqualvs5",
+    "title": "เพราะพี่รักจริง - หนึ่ง บีเคแบนด์",
+    "youtubeId": "23cipSExADA",
+    "startTime": 26,
+    "revealStartTime": 95,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "9069ezez",
+    "title": "สลักจิต - ป๊อบ ปองกูล",
+    "youtubeId": "rPzC1o8E4t0",
+    "startTime": 40,
+    "revealStartTime": 110,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "m4szgyah",
+    "title": "ภาพจำ -  ป๊อบ ปองกูล",
+    "youtubeId": "TgbdwLQDV3s",
+    "startTime": 49,
+    "revealStartTime": 84,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "b0aq4tkm",
+    "title": "ถ้าเธอรักฉันจริง - Three Man Down |Official MV|",
+    "youtubeId": "JBAuRoIRAs8",
+    "startTime": 31,
+    "revealStartTime": 75,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "8d0gcmqg",
+    "title": "PLEASE - Atom ชนกันต์",
+    "youtubeId": "GYpzzbVRrsk",
+    "startTime": 33,
+    "revealStartTime": 77,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "5dpqub26",
+    "title": "ROOM39 Feat.โป่ง ปฐมพงศ์",
+    "youtubeId": "5VrXPPKVb4g",
+    "startTime": 97,
+    "revealStartTime": 217,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "nwng1w8n",
+    "title": "อ้าว - Atom ชนกันต์",
+    "youtubeId": "QyhrOruvT1c",
+    "startTime": 63,
+    "revealStartTime": 122,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "wa8zikp8",
+    "title": "Three Man Down - ข้างกัน",
+    "youtubeId": "ks7p6DA0dKk",
+    "startTime": 74,
+    "revealStartTime": 96,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "xxpuibj2",
+    "title": "คิด(แต่ไม่)ถึง [Same Page?] - Tilly Birds |Official MV|",
+    "youtubeId": "dJ9uVVNWClk",
+    "startTime": 30,
+    "revealStartTime": 57,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "ouov8teu",
+    "title": "MILD  - SAYONARA",
+    "youtubeId": "mMKwM_FYBOo",
+    "startTime": 86,
+    "revealStartTime": 98,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "6e94fevy",
+    "title": "The Rube - I'M SORRY",
+    "youtubeId": "CQbO1bDRTPA",
+    "startTime": 56,
+    "revealStartTime": 67,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "qjol4300",
+    "title": "MUSKETEERS - นิทาน",
+    "youtubeId": "Ik228UkBp6w",
+    "startTime": 15,
+    "revealStartTime": 71,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "rldavcwy",
+    "title": "Slot Machine: เคลิ้ม - KLOEM [Official Music Video]",
+    "youtubeId": "UZxDLz-li_c",
+    "startTime": 35,
+    "revealStartTime": 71,
+    "type": "audio",
+    "points": 10
+  },
+  {
+    "id": "phv3aova",
+    "title": "เพื่อนเล่น ไม่เล่นเพื่อน (Just Being Friendly) - Tilly Birds Feat. MILLI |Official MV|",
+    "youtubeId": "AJEoJYgktb4",
+    "startTime": 20,
+    "revealStartTime": 70,
     "type": "video",
     "points": 10
   }

@@ -1,8 +1,13 @@
 /* ──────────────────────────────────────────────
-   Stream Resolver — Invidious Fallback Proxy
+   Stream Resolver — Cloudflare Worker Proxy + Invidious Fallback
    Extracts direct HTML5 stream URLs (.mp4 / .webm / audio)
+   100% Ad-Free via reverse-proxy, no YouTube IFrame needed
    ────────────────────────────────────────────── */
 
+// ── Primary: Cloudflare Worker Reverse Proxy ──
+const WORKER_ENDPOINT = 'https://guessthe-stream-proxy.thianrawit-9347.workers.dev/';
+
+// ── Emergency Fallback: Public Invidious Instances ──
 export const INVIDIOUS_INSTANCES = [
   'https://invidious.nerdvpn.de',
   'https://inv.nadeko.net',
@@ -16,8 +21,10 @@ export const INVIDIOUS_INSTANCES = [
 // In-memory Cache for resolved stream URLs in current session
 const streamCache = new Map<string, string>();
 
-// If public Invidious instances fail with CORS or network error, remember for this session
-// to avoid spamming the browser console with repeated CORS policy errors
+// Track if Worker is down for this session to skip retries
+let workerDown = false;
+
+// Track if Invidious instances are CORS-blocked for this session
 let instancesCORSBlocked = false;
 
 interface StreamFormat {
@@ -35,11 +42,23 @@ interface InvidiousResponse {
   error?: string;
 }
 
+interface WorkerResponse {
+  success: boolean;
+  url?: string;
+  error?: string;
+}
+
 /**
- * Resolves a YouTube ID into a direct HTML5 stream URL with automatic concurrent fallback across public Invidious instances.
- * @param youtubeId 11-character YouTube video ID or direct media URL
- * @param type 'audio' | 'video'
- * @param timeoutMs Timeout per instance attempt (default: 2000ms)
+ * Resolves a YouTube ID into a direct HTML5 stream URL.
+ *
+ * Resolution order:
+ *   1. In-memory cache (instant)
+ *   2. Cloudflare Worker Reverse Proxy (primary, 4s timeout)
+ *   3. Public Invidious Instances (emergency fallback, 2s timeout)
+ *
+ * @param youtubeId  11-character YouTube video ID or direct media URL
+ * @param type       'audio' | 'video'
+ * @param timeoutMs  Timeout for fallback Invidious attempts (default: 2000ms)
  */
 export async function resolveStreamUrl(
   youtubeId: string,
@@ -51,7 +70,7 @@ export async function resolveStreamUrl(
     throw new Error('ไม่พบ YouTube ID');
   }
 
-  // If already a direct media URL (.mp3 / .mp4 / .webm), return directly
+  // ── Shortcut: If already a direct media URL ──
   if (
     cleanId.startsWith('http') &&
     (cleanId.endsWith('.mp3') ||
@@ -63,13 +82,42 @@ export async function resolveStreamUrl(
     return cleanId;
   }
 
+  // ── Check in-memory cache ──
   const cacheKey = `${cleanId}_${type}`;
   if (streamCache.has(cacheKey)) {
     return streamCache.get(cacheKey)!;
   }
 
+  // ── Step 1: Cloudflare Worker Reverse Proxy (Primary Source) ──
+  if (!workerDown) {
+    try {
+      const workerUrl = `${WORKER_ENDPOINT}?id=${encodeURIComponent(cleanId)}&type=${encodeURIComponent(type)}`;
+      const response = await fetch(workerUrl, {
+        signal: AbortSignal.timeout(4000),
+      });
+
+      if (response.ok) {
+        const data: WorkerResponse = await response.json();
+        if (data.success && data.url) {
+          console.log(`[StreamResolver] ✅ Worker resolved ${cleanId} (${type})`);
+          streamCache.set(cacheKey, data.url);
+          return data.url;
+        } else {
+          console.warn(`[StreamResolver] Worker returned error for ${cleanId}:`, data.error);
+        }
+      } else {
+        console.warn(`[StreamResolver] Worker HTTP ${response.status} for ${cleanId}`);
+      }
+    } catch (err) {
+      console.warn(`[StreamResolver] Worker unreachable for ${cleanId}:`, err);
+      // Mark worker as down for this session to avoid spamming failed requests
+      workerDown = true;
+    }
+  }
+
+  // ── Step 2: Emergency Fallback — Public Invidious Instances ──
   if (instancesCORSBlocked) {
-    throw new Error('Invidious public API is currently CORS restricted in this session');
+    throw new Error('ทุกแหล่งสตรีมไม่สามารถใช้งานได้ในเซสชันนี้ (Worker down + Invidious CORS blocked)');
   }
 
   const fetchFromInstance = async (instance: string): Promise<string> => {
@@ -142,16 +190,17 @@ export async function resolveStreamUrl(
   };
 
   try {
+    console.warn('[StreamResolver] Worker failed, trying Invidious fallback...');
     const result = await Promise.race([
       Promise.any(INVIDIOUS_INSTANCES.map((inst) => fetchFromInstance(inst))),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Invidious instances timed out')), timeoutMs + 100)
+        setTimeout(() => reject(new Error('Invidious instances timed out')), timeoutMs + 500)
       ),
     ]);
     return result;
   } catch {
     instancesCORSBlocked = true;
-    throw new Error('ไม่สามารถดึง Direct Stream URL จาก Invidious API ได้ (ทุก instance ไม่ตอบสนอง)');
+    throw new Error('ไม่สามารถดึง Direct Stream URL ได้ (Cloudflare Worker และ Invidious ทั้งหมดไม่ตอบสนอง)');
   }
 }
 
@@ -160,7 +209,8 @@ export function clearStreamCache(): void {
   streamCache.clear();
 }
 
-/** Reset CORS blocked status for session testing */
+/** Reset blocked status (useful for testing or session refresh) */
 export function resetInstancesBlocked(): void {
   instancesCORSBlocked = false;
+  workerDown = false;
 }
