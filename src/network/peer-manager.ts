@@ -276,6 +276,28 @@ class PeerManager {
     }
   }
 
+  /** Send BUFFER_READY signal to host (client) or handle locally (host/solo) */
+  sendBufferReady(questionIndex: number): void {
+    const myId = this._peerId || 'local';
+    if (this._role === 'client') {
+      this.send({ type: 'BUFFER_READY', peerId: myId, questionIndex });
+    }
+  }
+
+  /** Host: broadcast FORCE_START to all peers */
+  broadcastForceStart(questionIndex: number): void {
+    if (this._role === 'host') {
+      this.broadcast({ type: 'FORCE_START', questionIndex });
+    }
+  }
+
+  /** Host: broadcast ALL_READY to all peers */
+  broadcastAllReady(questionIndex: number): void {
+    if (this._role === 'host') {
+      this.broadcast({ type: 'ALL_READY', questionIndex });
+    }
+  }
+
   /** Prune connections that are dead or stuck/idle for > 5 seconds */
   pruneInactivePeers(maxIdleMs = 5000): string[] {
     const now = Date.now();

@@ -609,3 +609,54 @@ body {
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
+
+/* ── FLIP Animation for Intermediate Leaderboard ── */
+.flip-card {
+  transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: transform;
+}
+
+/* ── Neon Red Force Start Button ── */
+.btn-force-start {
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  color: white;
+  font-weight: 700;
+  box-shadow: 0 0 25px rgba(239, 68, 68, 0.7), 0 0 50px rgba(239, 68, 68, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  animation: forcePulse 1.5s ease-in-out infinite;
+  cursor: pointer;
+  border-radius: 1rem;
+  padding: 0.875rem 1.75rem;
+  transition: all 0.2s ease;
+}
+
+.btn-force-start:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 0 35px rgba(239, 68, 68, 0.9), 0 0 70px rgba(239, 68, 68, 0.5);
+}
+
+@keyframes forcePulse {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.6), 0 0 40px rgba(239, 68, 68, 0.3);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(239, 68, 68, 0.9), 0 0 60px rgba(239, 68, 68, 0.5);
+    transform: scale(1.02);
+  }
+}
+
+/* ── Readiness Badges ── */
+.badge-ready {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #34d399;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
+}
+
+.badge-preparing {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
+}
+

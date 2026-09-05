@@ -4,6 +4,7 @@
 
 import type {
   GameConfig,
+  GameState,
   GamePhase,
   NetworkPacket,
   PlayerInfo,
@@ -12,14 +13,6 @@ import type {
 import { peerManager } from '../network/peer-manager';
 import { generateQuestions } from '../engine/shuffle';
 import { loadPool } from '../engine/track-pool';
-
-interface SavedSession {
-  questions: QuestionSession[];
-  currentIndex: number;
-  config: GameConfig;
-  players: PlayerInfo[];
-  role: 'solo' | 'host' | 'client';
-}
 
 const SESSION_STORAGE_KEY = 'guessthe_active_session';
 
@@ -39,6 +32,9 @@ class GameController {
   private _players: Map<string, PlayerInfo> = new Map();
   private _answers: Map<string, number> = new Map(); // peerId → choiceIndex
   private _answerTimes: Map<string, number> = new Map(); // peerId → timeUsedMs
+  private _readyPlayers: Map<number, Set<string>> = new Map(); // questionIndex → Set<peerId>
+  private _lastScoreDeltas: Map<string, number> = new Map(); // peerId → points earned on last question
+  private _previousRanks: Map<string, number> = new Map(); // peerId → rank (0-indexed)
   private _phaseCallback: PhaseChangeCallback | null = null;
   private _waitTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -55,6 +51,9 @@ class GameController {
     return Object.fromEntries(this._answers);
   }
   get totalQuestions(): number { return this._questions.length; }
+  get lastScoreDeltas(): Record<string, number> {
+    return Object.fromEntries(this._lastScoreDeltas);
+  }
 
   /** Register phase change callback */
   onPhaseChange(callback: PhaseChangeCallback): void {
@@ -73,13 +72,16 @@ class GameController {
 
   /** Add or update a player */
   addPlayer(peerId: string, name: string, isHost: boolean = false): void {
+    const existing = this._players.get(peerId);
     this._players.set(peerId, {
       peerId,
       name,
-      score: 0,
+      score: existing ? existing.score : 0,
       isHost,
-      correctCount: 0,
-      wrongCount: 0,
+      correctCount: existing ? existing.correctCount : 0,
+      wrongCount: existing ? existing.wrongCount : 0,
+      isReady: existing ? existing.isReady : false,
+      lastScoreDelta: existing ? existing.lastScoreDelta : 0,
     });
   }
 
@@ -87,15 +89,60 @@ class GameController {
   removePlayer(peerId: string): void {
     this._players.delete(peerId);
     this._answers.delete(peerId);
+    this._answerTimes.delete(peerId);
+    this._lastScoreDeltas.delete(peerId);
+    this._previousRanks.delete(peerId);
+
+    // Remove from ready tracking
+    this._readyPlayers.forEach((set) => set.delete(peerId));
+
     if (this._phase === 'GUESSING' || this._phase === 'WAITING') {
       this.checkAllAnswered();
     }
+  }
+
+  /** Set player readiness for a specific question (Initial Buffering or Prebuffer) */
+  setPlayerReady(peerId: string, questionIndex: number): boolean {
+    const player = this._players.get(peerId);
+    if (player) {
+      player.isReady = true;
+    }
+
+    if (!this._readyPlayers.has(questionIndex)) {
+      this._readyPlayers.set(questionIndex, new Set());
+    }
+    const set = this._readyPlayers.get(questionIndex)!;
+    set.add(peerId);
+
+    return this.isAllPlayersReady(questionIndex);
+  }
+
+  /** Check if all currently registered players are ready for questionIndex */
+  isAllPlayersReady(questionIndex: number): boolean {
+    if (this._players.size === 0) return false;
+    const readySet = this._readyPlayers.get(questionIndex);
+    if (!readySet) return false;
+
+    for (const peerId of this._players.keys()) {
+      if (!readySet.has(peerId)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Reset isReady state for all players */
+  resetReadyStates(): void {
+    this._players.forEach((p) => {
+      p.isReady = false;
+    });
   }
 
   /** CLIENT: Sync question index from host */
   setQuestionIndex(index: number): void {
     this._currentIndex = index;
     this._answers.clear();
+    this._answerTimes.clear();
   }
 
   /** Get scores as record */
@@ -117,9 +164,8 @@ class GameController {
     return counts;
   }
 
-  /** HOST: Start the game — generate questions and broadcast */
+  /** HOST: Start the game — transitions to INITIAL_BUFFERING */
   startGame(): void {
-    // Guard: prevent double-start (e.g., duplicate click handlers)
     if (this._phase !== 'LOBBY') {
       console.warn('[GameController] startGame() called while phase is', this._phase, '— ignoring');
       return;
@@ -132,15 +178,22 @@ class GameController {
 
     this._questions = generateQuestions(pool, this._config.questionCount);
     this._currentIndex = 0;
-    
-    // Reset all scores
+    this._readyPlayers.clear();
+    this._lastScoreDeltas.clear();
+    this._previousRanks.clear();
+
+    // Reset all scores & ready states
+    let playerIdx = 0;
     this._players.forEach((p) => {
       p.score = 0;
       p.correctCount = 0;
       p.wrongCount = 0;
+      p.isReady = false;
+      p.lastScoreDelta = 0;
+      this._previousRanks.set(p.peerId, playerIdx++);
     });
 
-    // Broadcast to clients
+    // Broadcast ROOM_INIT to clients
     if (peerManager.role === 'host') {
       const packet: NetworkPacket = {
         type: 'ROOM_INIT',
@@ -152,7 +205,8 @@ class GameController {
     }
 
     this.saveSession();
-    this.startCountdown();
+    // Transition to INITIAL_BUFFERING
+    this.emitPhase('INITIAL_BUFFERING', { questionIndex: 0 });
   }
 
   /** CLIENT: Receive game init from host */
@@ -160,22 +214,39 @@ class GameController {
     this._questions = questions;
     this._config = config;
     this._currentIndex = 0;
-    
+    this._readyPlayers.clear();
+    this._lastScoreDeltas.clear();
+    this._previousRanks.clear();
+
     this._players.clear();
-    players.forEach((p) => {
-      this._players.set(p.peerId, { ...p, score: 0, correctCount: 0, wrongCount: 0 });
+    players.forEach((p, idx) => {
+      this._players.set(p.peerId, {
+        ...p,
+        score: 0,
+        correctCount: 0,
+        wrongCount: 0,
+        isReady: false,
+        lastScoreDelta: 0,
+      });
+      this._previousRanks.set(p.peerId, idx);
     });
 
-    this.startCountdown();
+    this.emitPhase('INITIAL_BUFFERING', { questionIndex: 0 });
   }
 
-  /** Start countdown phase */
-  private startCountdown(): void {
+  /** Start countdown phase (3..2..1) */
+  startCountdown(questionIndex?: number): void {
+    if (typeof questionIndex === 'number') {
+      this._currentIndex = questionIndex;
+    }
     this._answers.clear();
     this._answerTimes.clear();
+    this.resetReadyStates();
+
     this.emitPhase('COUNTDOWN', { questionIndex: this._currentIndex });
 
     if (peerManager.role === 'host') {
+      peerManager.broadcastAllReady(this._currentIndex);
       peerManager.broadcast({
         type: 'STATE_COUNTDOWN',
         questionIndex: this._currentIndex,
@@ -183,7 +254,15 @@ class GameController {
     }
   }
 
-  /** Called after countdown completes — move to guessing */
+  /** HOST: Force start game (e.g. on 10s timeout) */
+  forceStart(questionIndex: number = 0): void {
+    if (peerManager.role === 'host') {
+      peerManager.broadcastForceStart(questionIndex);
+    }
+    this.startCountdown(questionIndex);
+  }
+
+  /** Called after countdown completes — move to guessing/answering */
   triggerGuessing(): void {
     this.emitPhase('GUESSING', { questionIndex: this._currentIndex });
 
@@ -193,8 +272,8 @@ class GameController {
         questionIndex: this._currentIndex,
       });
 
-      // Dynamic timeout based on configured guessDuration + 1s grace period
-      const waitMs = (this._config.guessDuration * 1000) + 1000;
+      // Dynamic timeout based on configured guessDuration + 1.5s grace period
+      const waitMs = (this._config.guessDuration * 1000) + 1500;
       this._waitTimeout = setTimeout(() => {
         // Prune any players stalled > 5s so remaining players are never blocked
         const pruned = peerManager.pruneInactivePeers(5000);
@@ -212,16 +291,14 @@ class GameController {
       this._answerTimes.set(peerId, timeUsedMs);
     }
 
-    // If host, broadcast is not needed for submit — just check
     if (peerManager.isHost) {
       this.checkAllAnswered();
     } else {
-      // Client sends to host
       peerManager.send({
-        type: 'PLAYER_SUBMIT',
+        type: 'SUBMIT_ANSWER',
         peerId,
         choiceIndex,
-        timeUsedMs,
+        timeUsedMs: timeUsedMs || 0,
       });
     }
 
@@ -248,8 +325,7 @@ class GameController {
         clearTimeout(this._waitTimeout);
         this._waitTimeout = null;
       }
-      // Small delay before reveal for UX
-      setTimeout(() => this.triggerReveal(), 500);
+      setTimeout(() => this.triggerReveal(), 400);
     }
   }
 
@@ -263,6 +339,8 @@ class GameController {
     const question = this.currentQuestion;
     if (!question) return;
 
+    this._lastScoreDeltas.clear();
+
     // Calculate scores with speed deduction (0.5s = 0.5pt deduction)
     this._answers.forEach((choiceIndex, peerId) => {
       const player = this._players.get(peerId);
@@ -273,15 +351,21 @@ class GameController {
         const earned = Math.max(0.5, Math.round((question.points - deduction) * 10) / 10);
         player.score = Math.round((player.score + earned) * 10) / 10;
         player.correctCount++;
+        player.lastScoreDelta = earned;
+        this._lastScoreDeltas.set(peerId, earned);
       } else {
         player.wrongCount++;
+        player.lastScoreDelta = 0;
+        this._lastScoreDeltas.set(peerId, 0);
       }
     });
 
-    // For players who didn't answer, mark wrong
+    // Players who didn't answer get 0 delta and wrong count
     this._players.forEach((player) => {
       if (!this._answers.has(player.peerId)) {
         player.wrongCount++;
+        player.lastScoreDelta = 0;
+        this._lastScoreDeltas.set(player.peerId, 0);
       }
     });
 
@@ -291,6 +375,7 @@ class GameController {
       scores: this.getScores(),
       correctCounts: this.getCorrectCounts(),
       wrongCounts: this.getWrongCounts(),
+      lastScoreDeltas: this.lastScoreDeltas,
     };
 
     if (peerManager.role === 'host') {
@@ -309,21 +394,30 @@ class GameController {
     answers: Record<string, number>,
     scores: Record<string, number>,
     correctCounts: Record<string, number>,
-    wrongCounts: Record<string, number>
+    wrongCounts: Record<string, number>,
+    deltas?: Record<string, number>
   ): void {
-    // Update local answers
     this._answers.clear();
     for (const [peerId, choice] of Object.entries(answers)) {
       this._answers.set(peerId, choice);
     }
 
-    // Update scores
+    this._lastScoreDeltas.clear();
+    if (deltas) {
+      for (const [peerId, delta] of Object.entries(deltas)) {
+        this._lastScoreDeltas.set(peerId, delta);
+      }
+    }
+
     for (const [peerId, score] of Object.entries(scores)) {
       const player = this._players.get(peerId);
       if (player) {
         player.score = score;
         player.correctCount = correctCounts[peerId] || 0;
         player.wrongCount = wrongCounts[peerId] || 0;
+        if (deltas && typeof deltas[peerId] === 'number') {
+          player.lastScoreDelta = deltas[peerId];
+        }
       }
     }
 
@@ -333,7 +427,34 @@ class GameController {
       scores,
       correctCounts,
       wrongCounts,
+      lastScoreDeltas: this.lastScoreDeltas,
     });
+  }
+
+  /** Trigger Intermediate Leaderboard phase (with Rank Deltas) */
+  triggerIntermediateLeaderboard(): { scores: Record<string, number>; rankDeltas: Record<string, number> } {
+    const scores = this.getScores();
+    const rankDeltas: Record<string, number> = {};
+
+    // Sort current players by score descending
+    const sorted = [...this.players].sort((a, b) => b.score - a.score);
+    sorted.forEach((p, newRank) => {
+      const oldRank = this._previousRanks.get(p.peerId) ?? newRank;
+      // rankDelta: positive if moved up (e.g. from rank 3 to rank 1 -> 3 - 1 = +2)
+      rankDeltas[p.peerId] = oldRank - newRank;
+      this._previousRanks.set(p.peerId, newRank);
+    });
+
+    if (peerManager.role === 'host') {
+      peerManager.broadcast({
+        type: 'SHOW_INTERMEDIATE_LEADERBOARD',
+        scores,
+        rankDeltas,
+      });
+    }
+
+    this.emitPhase('INTERMEDIATE_LEADERBOARD', { scores, rankDeltas });
+    return { scores, rankDeltas };
   }
 
   /** Move to next question or game over */
@@ -349,12 +470,15 @@ class GameController {
   }
 
   /** Game over */
-  private gameOver(): void {
+  gameOver(): void {
     this.clearSession();
+
+    const finalLeaderboard = [...this.players].sort((a, b) => b.score - a.score);
 
     if (peerManager.role === 'host') {
       peerManager.broadcast({
         type: 'GAME_OVER',
+        finalLeaderboard,
         finalScores: this.getScores(),
         correctCounts: this.getCorrectCounts(),
         wrongCounts: this.getWrongCounts(),
@@ -362,6 +486,7 @@ class GameController {
     }
 
     this.emitPhase('GAME_OVER', {
+      finalLeaderboard,
       finalScores: this.getScores(),
       correctCounts: this.getCorrectCounts(),
       wrongCounts: this.getWrongCounts(),
@@ -370,22 +495,30 @@ class GameController {
 
   /** CLIENT: receive game over */
   receiveGameOver(
-    finalScores: Record<string, number>,
-    correctCounts: Record<string, number>,
-    wrongCounts: Record<string, number>
+    finalScores?: Record<string, number>,
+    correctCounts?: Record<string, number>,
+    wrongCounts?: Record<string, number>,
+    finalLeaderboard?: any[]
   ): void {
     this.clearSession();
 
-    for (const [peerId, score] of Object.entries(finalScores)) {
-      const player = this._players.get(peerId);
-      if (player) {
-        player.score = score;
-        player.correctCount = correctCounts[peerId] || 0;
-        player.wrongCount = wrongCounts[peerId] || 0;
+    if (finalScores) {
+      for (const [peerId, score] of Object.entries(finalScores)) {
+        const player = this._players.get(peerId);
+        if (player) {
+          player.score = score;
+          player.correctCount = correctCounts?.[peerId] || 0;
+          player.wrongCount = wrongCounts?.[peerId] || 0;
+        }
       }
     }
 
-    this.emitPhase('GAME_OVER', { finalScores, correctCounts, wrongCounts });
+    this.emitPhase('GAME_OVER', {
+      finalLeaderboard: finalLeaderboard || [...this.players].sort((a, b) => b.score - a.score),
+      finalScores: this.getScores(),
+      correctCounts: this.getCorrectCounts(),
+      wrongCounts: this.getWrongCounts(),
+    });
   }
 
   /** HOST: Rematch — reshuffle and restart */
@@ -393,11 +526,18 @@ class GameController {
     const pool = loadPool();
     this._questions = generateQuestions(pool, this._config.questionCount);
     this._currentIndex = 0;
+    this._readyPlayers.clear();
+    this._lastScoreDeltas.clear();
+    this._previousRanks.clear();
 
+    let playerIdx = 0;
     this._players.forEach((p) => {
       p.score = 0;
       p.correctCount = 0;
       p.wrongCount = 0;
+      p.isReady = false;
+      p.lastScoreDelta = 0;
+      this._previousRanks.set(p.peerId, playerIdx++);
     });
 
     if (peerManager.role === 'host') {
@@ -410,7 +550,7 @@ class GameController {
     }
 
     this.saveSession();
-    this.startCountdown();
+    this.emitPhase('INITIAL_BUFFERING', { questionIndex: 0 });
   }
 
   /** Clear only the player map */
@@ -426,6 +566,9 @@ class GameController {
     this._currentIndex = 0;
     this._answers.clear();
     this._answerTimes.clear();
+    this._readyPlayers.clear();
+    this._lastScoreDeltas.clear();
+    this._previousRanks.clear();
     this._players.clear();
     if (this._waitTimeout) {
       clearTimeout(this._waitTimeout);
@@ -441,25 +584,11 @@ class GameController {
     this._phaseCallback = null;
   }
 
-  /** Save active game state (disabled to ensure reload returns to /main) */
-  saveSession(): void {
-    // Disabled: reloading returns to /main immediately
-  }
-
-  /** Clear saved game session */
+  saveSession(): void {}
   clearSession(): void {
-    try {
-      sessionStorage.removeItem(SESSION_STORAGE_KEY);
-    } catch {
-      /* ignore */
-    }
+    try { sessionStorage.removeItem(SESSION_STORAGE_KEY); } catch {}
   }
-
-  /** Restore game session (disabled: always return to /main on refresh) */
-  restoreSession(): boolean {
-    this.clearSession();
-    return false;
-  }
+  restoreSession(): boolean { return false; }
 }
 
 // Singleton

@@ -1,43 +1,672 @@
 /* ──────────────────────────────────────────────
-   Game Screen — Main Gameplay
+   Game Screen — Main Gameplay Engine
+   - 100% Ad-Free HTML5 Media (<video id="game-media">)
+   - Initial Buffering with 10s Hard Timeout & Force Start
+   - Intermediate Leaderboard with FLIP Animation & Double-Buffering
    ────────────────────────────────────────────── */
 
 import { setScreen } from '../utils/dom';
-import { navigate, getCurrentRoute } from '../utils/router';
+import { navigate } from '../utils/router';
 import { gameController } from '../game/game-controller';
 import { peerManager } from '../network/peer-manager';
-import { mediaEngine } from '../engine/media-engine';
+import { resolveStreamUrl } from '../engine/stream-resolver';
 import { countdown } from '../engine/timer';
+import {
+  createYouTubePlayer,
+  prebufferAt,
+  playSegment,
+  playReveal as ytPlayReveal,
+  stopPlayer,
+  destroyPlayer,
+} from '../engine/youtube-player';
 import type { NetworkPacket, QuestionSession, PlayerInfo } from '../types/index';
 
-let currentSegmentCancel: (() => void) | null = null;
-let countdownCancel: (() => void) | null = null;
-let currentTimerCancel: (() => void) | null = null;
-let hasRevealedCurrentQuestion = false;
+// ── State variables for active game session ──
 let activeFlowId = 0;
+let currentTimerCancel: (() => void) | null = null;
+let currentCountdownCancel: (() => void) | null = null;
+let snippetTimeout: ReturnType<typeof setTimeout> | null = null;
+let revealTimeout: ReturnType<typeof setTimeout> | null = null;
+let intermediateTimeout: ReturnType<typeof setTimeout> | null = null;
+let hardTimeoutTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Wait for an element to appear in the DOM, polling with requestAnimationFrame */
-function waitForElement(id: string, timeoutMs: number = 2000): Promise<void> {
-  return new Promise((resolve) => {
-    const start = Date.now();
-    const check = () => {
-      if (document.getElementById(id)) {
-        resolve();
-      } else if (Date.now() - start > timeoutMs) {
-        console.warn(`[GameScreen] waitForElement: #${id} not found after ${timeoutMs}ms, proceeding anyway`);
-        resolve();
-      } else {
-        requestAnimationFrame(check);
-      }
-    };
-    requestAnimationFrame(check);
+let isForceStarted = false;
+let isPreparingNext = false;
+let hasAnsweredCurrent = false;
+
+let currentPlaybackMode: 'html5' | 'youtube' = 'html5';
+let ytPlayerInstance: YT.Player | null = null;
+let activeSegmentCancel: (() => void) | null = null;
+
+// Store previous player positions for FLIP animation
+const previousCardTops = new Map<string, number>();
+
+/**
+ * Main Render Function for Game Screen
+ */
+export function renderGameScreen(): void {
+  cleanupTimers();
+
+  const isHost = peerManager.isHost;
+  const myPeerId = peerManager.peerId || 'local';
+
+  setScreen(() => {
+    const container = document.createElement('div');
+    container.className = 'min-h-[100dvh] flex flex-col px-3 py-3 sm:px-4 sm:py-4 relative select-none';
+
+    // Verify questions exist
+    if (!gameController.currentQuestion && gameController.phase !== 'GAME_OVER') {
+      setTimeout(() => navigate('/main'), 0);
+      return container;
+    }
+
+    const currentIdx = gameController.currentIndex;
+    const totalQ = gameController.totalQuestions;
+    const question = gameController.currentQuestion;
+    const players = gameController.players;
+    const config = gameController.config;
+
+    container.innerHTML = `
+      <!-- Top Header: Progress & Scoreboard -->
+      <div class="w-full max-w-3xl mx-auto mb-2.5 animate-fade-in" id="game-header">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-text-secondary text-xs font-semibold" id="header-question-step">ข้อ ${currentIdx + 1}/${totalQ}</span>
+          <div class="flex-1 h-1.5 bg-bg-card rounded-full overflow-hidden">
+            <div id="header-progress-bar" class="h-full bg-gradient-to-r from-accent-purple to-accent-blue rounded-full transition-all duration-500" style="width: ${((currentIdx + 1) / totalQ) * 100}%"></div>
+          </div>
+          <span class="text-text-muted text-xs font-mono" id="header-points">${question ? question.points : 10}pt</span>
+        </div>
+        
+        <div class="flex flex-wrap gap-1.5 justify-center" id="scoreboard-container">
+          ${renderScoreboardItems(players)}
+        </div>
+        <div id="player-alert-banner" class="hidden text-center text-xs text-accent-yellow font-semibold mt-1 px-3 py-1 glass-card-light rounded-lg"></div>
+      </div>
+
+      <!-- 16:9 Media Container with Persistent HTML5 Media Element -->
+      <div class="w-full max-w-3xl mx-auto mb-3 animate-slide-up" id="media-outer-box">
+        <div class="w-full aspect-video bg-black rounded-2xl overflow-hidden relative shadow-2xl border border-border-subtle flex items-center justify-center" id="media-viewport">
+          
+          <!-- Anti-Spoiler Header Mask -->
+          <div class="absolute top-0 left-0 right-0 z-30 px-3 py-2 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex items-center justify-between pointer-events-none" id="anti-spoiler-mask">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full ${question?.type === 'video' ? 'bg-accent-blue' : 'bg-accent-purple'} animate-pulse"></span>
+              <span class="font-heading font-bold text-xs sm:text-sm text-text-primary tracking-wide">
+                GuessThe? <span class="gradient-text font-semibold">${question?.type === 'video' ? 'MV' : 'Music'}</span>
+              </span>
+            </div>
+            <span class="text-[10px] sm:text-xs text-accent-purple bg-accent-purple/20 border border-accent-purple/30 px-2.5 py-0.5 rounded-full font-semibold" id="media-type-badge">
+              ${question?.type === 'video' ? '🎬 ทาย MV (ดูคลิป)' : '🎵 ทายเพลง (ฟังเสียง)'}
+            </span>
+          </div>
+
+          <!-- HTML5 Video / Audio Media Element (Persistent: Never destroyed) -->
+          <video
+            id="game-media"
+            playsinline
+            webkit-playsinline
+            muted
+            preload="auto"
+            class="w-full h-full object-contain bg-black transition-opacity duration-300 pointer-events-none"
+          ></video>
+
+          <!-- YouTube Player Fallback Container -->
+          <div id="game-yt-player-wrap" class="absolute inset-0 w-full h-full bg-black hidden pointer-events-none">
+            <div id="game-yt-player" class="w-full h-full"></div>
+          </div>
+
+          <!-- Audio Curtain / Visualizer Overlay -->
+          <div id="media-curtain" class="absolute inset-0 bg-[#0a0a14] z-20 flex flex-col items-center justify-center gap-3">
+            <div class="flex items-end gap-1.5 h-12 mb-1" id="audio-visualizer-bars">
+              ${Array.from({ length: 14 }, () => `<div class="w-1.5 bg-gradient-to-t from-accent-purple to-accent-cyan rounded-full animate-pulse" style="height: ${20 + Math.random() * 75}%;"></div>`).join('')}
+            </div>
+            <p class="font-heading font-bold text-sm sm:text-base text-text-primary" id="curtain-title">🎵 โหมดฟังเสียงเพลง</p>
+            <p class="text-text-muted text-xs" id="curtain-sub">รอฟังเพลงทายให้จบก่อนเริ่มตอบ</p>
+          </div>
+
+          <!-- Countdown 3..2..1 Overlay -->
+          <div id="countdown-overlay" class="absolute inset-0 z-40 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center hidden">
+            <div id="countdown-number" class="text-7xl sm:text-8xl font-heading font-black text-transparent bg-clip-text bg-gradient-to-br from-accent-purple via-accent-cyan to-white">3</div>
+          </div>
+
+          <!-- Slow Connection Warning Banner -->
+          <div id="slow-network-banner" class="absolute bottom-2 left-2 right-2 z-35 bg-accent-red/80 backdrop-blur-md text-white text-xs py-1 px-3 rounded-lg text-center font-semibold hidden animate-slide-up">
+            ⚠️ การเชื่อมต่อช้า กำลังเร่งข้ามเพื่อเล่นต่อ...
+          </div>
+        </div>
+      </div>
+
+      <!-- Question Timer Bar -->
+      <div id="timer-container" class="w-full max-w-3xl mx-auto mb-2.5 px-1 transition-all duration-300">
+        <div class="flex items-center justify-between text-xs font-bold font-mono mb-1.5 px-0.5">
+          <div class="flex items-center gap-1.5" id="timer-label-box">
+            <span class="text-sm" id="timer-icon">⏳</span>
+            <span class="text-text-secondary uppercase tracking-wider text-[11px]" id="timer-label">เวลาตอบ</span>
+          </div>
+          <div class="flex items-center gap-1 font-mono text-sm sm:text-base font-extrabold text-accent-cyan transition-colors" id="timer-text-wrap">
+            <span id="timer-seconds">${config.guessDuration}</span><span class="text-xs">s</span>
+          </div>
+        </div>
+        
+        <div class="timer-bar-wrapper w-full h-3 sm:h-3.5 bg-black/50 rounded-full p-0.5 border border-border-subtle/80 overflow-hidden shadow-inner relative">
+          <div
+            id="timer-progress-bar"
+            class="h-full rounded-full transition-all ease-linear"
+            style="width: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6, #06b6d4);"
+          ></div>
+        </div>
+      </div>
+
+      <!-- Choice Buttons Grid -->
+      <div class="w-full max-w-3xl mx-auto flex-1 flex flex-col justify-end animate-slide-up stagger-2" id="choices-container">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3 w-full" id="choices-grid">
+          ${(question?.options || ['', '', '', '']).map((opt, i) => {
+            const labels = ['A', 'B', 'C', 'D'];
+            return `
+              <button class="choice-btn" id="choice-${i}" data-index="${i}" disabled>
+                <span class="choice-label">${labels[i]}</span>
+                <span class="flex-1 truncate">${opt}</span>
+                <div class="player-badges hidden flex-wrap gap-1 mt-1" id="badges-${i}"></div>
+              </button>
+            `;
+          }).join('')}
+        </div>
+
+        <!-- Status Bar -->
+        <div id="status-bar" class="text-center py-3">
+          <span class="text-text-muted text-sm font-medium" id="status-text">⏳ กำลังเตรียมพร้อม...</span>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════
+           OVERLAY 1: INITIAL BUFFERING SCREEN (10s Hard Timeout)
+           ══════════════════════════════════════════════ -->
+      <div id="initial-buffering-overlay" class="fixed inset-0 z-50 bg-bg-primary/95 backdrop-blur-xl flex flex-col items-center justify-center p-4 ${gameController.phase === 'INITIAL_BUFFERING' ? 'flex' : 'hidden'}">
+        <div class="w-full max-w-lg glass-card p-6 sm:p-8 flex flex-col items-center text-center shadow-2xl border border-accent-purple/30">
+          <div class="w-16 h-16 rounded-full bg-accent-purple/20 border border-accent-purple/40 flex items-center justify-center text-3xl mb-4 animate-float">
+            🎧
+          </div>
+          <h2 class="text-xl sm:text-2xl font-bold font-heading gradient-text mb-1">
+            กำลังเตรียมความพร้อมเข้าสู่เกม
+          </h2>
+          <p class="text-text-secondary text-xs sm:text-sm mb-6" id="buffering-subtext">
+            ระบบกำลังดึงสตรีมเพลงและตรวจเช็คความพร้อมของผู้เล่นทุกคน...
+          </p>
+
+          <!-- Players Ready Grid -->
+          <div class="w-full grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-6" id="buffering-players-list">
+            ${renderBufferingPlayersList(players)}
+          </div>
+
+          <!-- Hard Timeout Counter / Force Start Button Area -->
+          <div class="w-full flex flex-col items-center gap-3 pt-2" id="buffering-controls">
+            <div class="flex items-center gap-2 text-xs text-text-muted font-mono" id="hard-timeout-status">
+              <div class="spinner !w-3.5 !h-3.5"></div>
+              <span id="hard-timeout-text">กำลังเชื่อมต่อ (จะเริ่มอัตโนมัติเมื่อทุกคนพร้อม)</span>
+            </div>
+
+            <!-- Neon Red Force Start Button (Shown for Host on 10s Timeout) -->
+            <button id="btn-force-start" class="btn-force-start w-full text-base sm:text-lg hidden">
+              ⚡ บังคับเริ่มเกมเลย (Force Start)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════
+           OVERLAY 2: INTERMEDIATE LEADERBOARD (FLIP Animation)
+           ══════════════════════════════════════════════ -->
+      <div id="intermediate-leaderboard-overlay" class="fixed inset-0 z-45 bg-bg-primary/95 backdrop-blur-xl flex flex-col items-center justify-center p-4 hidden">
+        <div class="w-full max-w-lg glass-card p-6 sm:p-8 flex flex-col shadow-2xl border border-border-subtle">
+          <div class="text-center mb-5">
+            <span class="text-xs uppercase tracking-widest text-accent-cyan font-bold">Leaderboard</span>
+            <h2 class="text-xl sm:text-2xl font-bold font-heading gradient-text mt-0.5" id="intermediate-title">
+              🏆 สรุปคะแนน (ข้อ ${currentIdx + 1}/${totalQ})
+            </h2>
+            <p class="text-text-muted text-xs mt-1">
+              ✨ กำลังเตรียมสื่อข้อถัดไปในเบื้องหลัง...
+            </p>
+          </div>
+
+          <!-- FLIP Card Items Container -->
+          <div class="flex flex-col gap-2 w-full mb-4 relative" id="flip-leaderboard-list">
+            ${renderIntermediateCards(players, gameController.lastScoreDeltas)}
+          </div>
+
+          <div class="w-full h-1.5 bg-bg-card rounded-full overflow-hidden mt-2">
+            <div id="intermediate-progress" class="h-full bg-gradient-to-r from-accent-cyan to-accent-purple rounded-full transition-all ease-linear" style="width: 100%;"></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // ── Setup Network Listeners for Multiplayer ──
+    setupMultiplayerListeners(isHost, myPeerId);
+
+    return container;
+  });
+
+  // Start the controller and flow after DOM mount
+  const currentFlowId = ++activeFlowId;
+  queueMicrotask(() => {
+    handleFlowState(currentFlowId);
   });
 }
 
-function startQuestionTimer(
-  durationSec: number,
-  onExpire?: () => void
-): () => void {
+/**
+ * Handle initial state machine dispatch after DOM mount
+ */
+function handleFlowState(flowId: number): void {
+  if (activeFlowId !== flowId) return;
+
+  const currentPhase = gameController.phase;
+  const isHost = peerManager.isHost;
+  const myPeerId = peerManager.peerId || 'local';
+
+  if (currentPhase === 'INITIAL_BUFFERING') {
+    startInitialBuffering(flowId, isHost, myPeerId);
+  } else if (currentPhase === 'INTERMEDIATE_LEADERBOARD') {
+    showIntermediateLeaderboard();
+  } else {
+    // Standard question flow
+    const question = gameController.currentQuestion;
+    if (question) {
+      startQuestionFlow(question, flowId);
+    }
+  }
+}
+
+async function setupYouTubePlayerFallback(youtubeId: string, startTime: number): Promise<void> {
+  try {
+    const ytWrap = document.getElementById('game-yt-player-wrap');
+    if (ytWrap) {
+      ytWrap.innerHTML = '<div id="game-yt-player" class="w-full h-full"></div>';
+      ytWrap.classList.remove('hidden');
+    }
+    ytPlayerInstance = await createYouTubePlayer('game-yt-player', youtubeId);
+    await prebufferAt(ytPlayerInstance, startTime);
+  } catch (err) {
+    console.warn('[GameScreen] setupYouTubePlayerFallback warning:', err);
+  }
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────
+ * INITIAL BUFFERING PHASE (10s Hard Timeout & Force Start)
+ * ─────────────────────────────────────────────────────────────
+ */
+async function startInitialBuffering(flowId: number, isHost: boolean, myPeerId: string): Promise<void> {
+  const overlay = document.getElementById('initial-buffering-overlay');
+  if (overlay) overlay.classList.remove('hidden');
+
+  const question = gameController.currentQuestion;
+  if (!question) return;
+
+  const media = document.getElementById('game-media') as HTMLVideoElement | null;
+  const hardTimeoutText = document.getElementById('hard-timeout-text');
+  const forceStartBtn = document.getElementById('btn-force-start') as HTMLButtonElement | null;
+
+  isForceStarted = false;
+  let hasSignaledReady = false;
+
+  // 1. Client & Host: Pre-buffer Question 0
+  const bufferTask = async () => {
+    try {
+      const streamUrl = await resolveStreamUrl(question.youtubeId, question.type, 2000);
+      if (activeFlowId !== flowId) return;
+
+      if (media) {
+        currentPlaybackMode = 'html5';
+        media.src = streamUrl;
+        media.muted = true;
+        media.currentTime = Math.max(0, question.startTime);
+        media.load();
+
+        // Brief play/pause to pull buffer into device memory
+        try {
+          const p = media.play();
+          if (p !== undefined) {
+            p.then(() => {
+              setTimeout(() => { try { media.pause(); } catch {} }, 150);
+            }).catch(() => {});
+          }
+        } catch {}
+      }
+    } catch (err) {
+      console.warn('[InitialBuffering] Invidious direct stream unavailable, switching to YouTube Player fallback:', err);
+      currentPlaybackMode = 'youtube';
+      await setupYouTubePlayerFallback(question.youtubeId, question.startTime);
+    } finally {
+      if (!hasSignaledReady && activeFlowId === flowId) {
+        hasSignaledReady = true;
+        // Signal BUFFER_READY
+        signalBufferReady(0, myPeerId, isHost);
+      }
+    }
+  };
+
+  bufferTask();
+
+  // 2. Hard Timeout (10 seconds) on Host
+  if (isHost) {
+    let timeLeft = 10;
+    if (hardTimeoutTimer) clearInterval(hardTimeoutTimer);
+
+    hardTimeoutTimer = setInterval(() => {
+      if (activeFlowId !== flowId) {
+        clearInterval(hardTimeoutTimer!);
+        return;
+      }
+
+      timeLeft--;
+      if (hardTimeoutText) {
+        hardTimeoutText.textContent = `รอผู้เล่นทุกคนพร้อม... (${timeLeft}s)`;
+      }
+
+      if (timeLeft <= 0) {
+        clearInterval(hardTimeoutTimer!);
+        // If not all players ready, display the Force Start Button prominently
+        if (!gameController.isAllPlayersReady(0)) {
+          if (hardTimeoutText) {
+            hardTimeoutText.innerHTML = '<span class="text-accent-red font-bold">⚠️ ผู้เล่นบางคนยังโหลดไม่เสร็จ</span>';
+          }
+          if (forceStartBtn) {
+            forceStartBtn.classList.remove('hidden');
+            forceStartBtn.onclick = () => {
+              forceStartBtn.disabled = true;
+              isForceStarted = true;
+              gameController.forceStart(0);
+            };
+          }
+        }
+      }
+    }, 1000);
+  }
+}
+
+/**
+ * Signal BUFFER_READY to host or process locally
+ */
+function signalBufferReady(questionIndex: number, myPeerId: string, isHost: boolean): void {
+  // Update local player ready state
+  updatePlayerReadyStatus(myPeerId, true);
+
+  if (isHost) {
+    const allReady = gameController.setPlayerReady(myPeerId, questionIndex);
+    updateBufferingUI();
+    if (allReady) {
+      if (hardTimeoutTimer) clearInterval(hardTimeoutTimer);
+      // Small pause for visual satisfaction of "All Ready"
+      setTimeout(() => {
+        gameController.startCountdown(questionIndex);
+      }, 400);
+    }
+  } else {
+    peerManager.sendBufferReady(questionIndex);
+  }
+}
+
+/**
+ * Update ready badge on UI for a specific player
+ */
+function updatePlayerReadyStatus(peerId: string, isReady: boolean): void {
+  const badge = document.getElementById(`ready-badge-${peerId.replace(/[^a-zA-Z0-9]/g, '_')}`);
+  if (badge) {
+    if (isReady) {
+      badge.className = 'text-xs px-2.5 py-0.5 rounded-full font-semibold badge-ready animate-fade-in flex items-center gap-1';
+      badge.innerHTML = '<span>✅</span> พร้อมแล้ว';
+    } else {
+      badge.className = 'text-xs px-2.5 py-0.5 rounded-full font-semibold badge-preparing flex items-center gap-1';
+      badge.innerHTML = '<div class="spinner !w-3 !h-3"></div> <span>กำลังเตรียมสื่อ...</span>';
+    }
+  }
+}
+
+function updateBufferingUI(): void {
+  const container = document.getElementById('buffering-players-list');
+  if (container) {
+    container.innerHTML = renderBufferingPlayersList(gameController.players);
+  }
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────
+ * QUESTION FLOW: COUNTDOWN -> SNIPPET -> ANSWERING -> REVEAL
+ * ─────────────────────────────────────────────────────────────
+ */
+function startQuestionFlow(question: QuestionSession, flowId: number): void {
+  // Hide buffering & leaderboard overlays
+  const bufferingOverlay = document.getElementById('initial-buffering-overlay');
+  if (bufferingOverlay) bufferingOverlay.classList.add('hidden');
+
+  const leaderboardOverlay = document.getElementById('intermediate-leaderboard-overlay');
+  if (leaderboardOverlay) leaderboardOverlay.classList.add('hidden');
+
+  // Update header indicators
+  const currentIdx = gameController.currentIndex;
+  const totalQ = gameController.totalQuestions;
+  const stepEl = document.getElementById('header-question-step');
+  const barEl = document.getElementById('header-progress-bar');
+  const pointsEl = document.getElementById('header-points');
+  const typeBadge = document.getElementById('media-type-badge');
+
+  if (stepEl) stepEl.textContent = `ข้อ ${currentIdx + 1}/${totalQ}`;
+  if (barEl) barEl.style.width = `${((currentIdx + 1) / totalQ) * 100}%`;
+  if (pointsEl) pointsEl.textContent = `${question.points}pt`;
+  if (typeBadge) {
+    typeBadge.textContent = question.type === 'video' ? '🎬 ทาย MV (ดูคลิป)' : '🎵 ทายเพลง (ฟังเสียง)';
+  }
+
+  // Update choice options
+  const choicesGrid = document.getElementById('choices-grid');
+  if (choicesGrid) {
+    const labels = ['A', 'B', 'C', 'D'];
+    choicesGrid.innerHTML = question.options.map((opt, i) => `
+      <button class="choice-btn" id="choice-${i}" data-index="${i}" disabled>
+        <span class="choice-label">${labels[i]}</span>
+        <span class="flex-1 truncate">${opt}</span>
+        <div class="player-badges hidden flex-wrap gap-1 mt-1" id="badges-${i}"></div>
+      </button>
+    `).join('');
+  }
+
+  // Check if we need to sync media player for this question
+  const media = document.getElementById('game-media') as HTMLVideoElement | null;
+  const ytWrap = document.getElementById('game-yt-player-wrap');
+
+  if (currentPlaybackMode === 'html5' && media && media.src) {
+    if (ytWrap) ytWrap.classList.add('hidden');
+  } else {
+    currentPlaybackMode = 'youtube';
+    if (ytWrap) ytWrap.classList.remove('hidden');
+    // Pre-seek or re-setup YouTube player if needed
+    if (ytPlayerInstance && typeof (ytPlayerInstance as any).loadVideoById === 'function') {
+      try {
+        (ytPlayerInstance as any).loadVideoById({
+          videoId: question.youtubeId,
+          startSeconds: Math.max(0, question.startTime),
+        });
+        prebufferAt(ytPlayerInstance, question.startTime);
+      } catch {
+        setupYouTubePlayerFallback(question.youtubeId, question.startTime);
+      }
+    } else {
+      setupYouTubePlayerFallback(question.youtubeId, question.startTime);
+    }
+  }
+
+  // Execute countdown 3..2..1
+  runCountdown(flowId, () => {
+    if (activeFlowId !== flowId) return;
+    runSnippetAndAnswering(question, flowId);
+  });
+}
+
+/**
+ * 3..2..1 Countdown
+ */
+function runCountdown(flowId: number, onComplete: () => void): void {
+  const overlay = document.getElementById('countdown-overlay');
+  const numberEl = document.getElementById('countdown-number');
+  if (overlay) overlay.classList.remove('hidden');
+
+  if (currentCountdownCancel) {
+    currentCountdownCancel();
+    currentCountdownCancel = null;
+  }
+
+  const { cancel } = countdown(3, (n) => {
+    if (activeFlowId !== flowId) return;
+    if (numberEl) {
+      numberEl.textContent = String(n);
+      numberEl.style.animation = 'none';
+      void numberEl.offsetHeight;
+      numberEl.style.animation = 'countdownPulse 0.9s ease-out';
+    }
+  }, () => {
+    if (activeFlowId !== flowId) return;
+    if (overlay) overlay.classList.add('hidden');
+    onComplete();
+  });
+
+  currentCountdownCancel = cancel;
+}
+
+/**
+ * Play Snippet then unlock Answering Buttons
+ */
+async function runSnippetAndAnswering(question: QuestionSession, flowId: number): Promise<void> {
+  const media = document.getElementById('game-media') as HTMLVideoElement | null;
+  const curtain = document.getElementById('media-curtain');
+  const statusText = document.getElementById('status-text');
+  const snippetDuration = gameController.config.snippetDuration || 3;
+  const answerDuration = gameController.config.guessDuration || 10;
+  const buttons = document.querySelectorAll('.choice-btn') as NodeListOf<HTMLButtonElement>;
+
+  hasAnsweredCurrent = false;
+
+  // Lock buttons during snippet playback
+  buttons.forEach((btn) => {
+    btn.disabled = true;
+    btn.classList.add('opacity-60', 'cursor-not-allowed');
+  });
+
+  if (statusText) {
+    statusText.innerHTML = question.type === 'video'
+      ? `🎬 กำลังแสดงคลิปทาย... <span class="text-accent-cyan font-bold">${snippetDuration}s</span> (รอคลิปจบเพื่อตอบ)`
+      : `🎧 กำลังเปิดเสียงเพลง... <span class="text-accent-cyan font-bold">${snippetDuration}s</span> (รอเพลงจบเพื่อตอบ)`;
+  }
+
+  // Setup media presentation
+  if (currentPlaybackMode === 'html5' && media && media.src) {
+    if (question.type === 'video') {
+      if (curtain) curtain.classList.add('hidden');
+      media.classList.remove('opacity-0');
+      media.classList.add('opacity-100');
+    } else {
+      if (curtain) curtain.classList.remove('hidden');
+      media.classList.add('opacity-0');
+    }
+
+    media.muted = false;
+    media.volume = 1.0;
+    try {
+      media.currentTime = Math.max(0, question.startTime);
+      await media.play();
+    } catch (e) {
+      console.warn('[GameScreen] Media play blocked, showing banner:', e);
+      const slowBanner = document.getElementById('slow-network-banner');
+      if (slowBanner) slowBanner.classList.remove('hidden');
+    }
+  } else if (currentPlaybackMode === 'youtube') {
+    const ytWrap = document.getElementById('game-yt-player-wrap');
+    if (question.type === 'video') {
+      if (curtain) curtain.classList.add('hidden');
+      if (ytWrap) ytWrap.classList.remove('hidden');
+    } else {
+      if (curtain) curtain.classList.remove('hidden');
+    }
+
+    if (ytPlayerInstance) {
+      if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+      activeSegmentCancel = playSegment(ytPlayerInstance, question.startTime, snippetDuration, () => {}).cancel;
+    }
+  }
+
+  // Host triggers guessing state
+  if (peerManager.isHost) {
+    gameController.triggerGuessing();
+  }
+
+  // Snippet timer: pause media & unlock buttons for Answering
+  snippetTimeout = setTimeout(() => {
+    if (activeFlowId !== flowId) return;
+
+    if (currentPlaybackMode === 'html5' && media) {
+      try { media.pause(); } catch {}
+    } else if (currentPlaybackMode === 'youtube' && ytPlayerInstance) {
+      if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+      try { stopPlayer(ytPlayerInstance); } catch {}
+    }
+
+    // Cover video to prevent visual spoiler while answering
+    if (curtain) curtain.classList.remove('hidden');
+
+    // Unlock answer choices
+    buttons.forEach((btn) => {
+      btn.disabled = false;
+      btn.classList.remove('opacity-60', 'cursor-not-allowed');
+    });
+
+    if (statusText) {
+      statusText.innerHTML = '⏰ <span class="text-accent-cyan font-bold">เลือกคำตอบเร็ว!</span> (ตอบเร็วกว่า = คะแนนเยอะกว่า)';
+    }
+
+    const answerStartTime = Date.now();
+
+    // Start Question Timer Progress Bar
+    if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
+    currentTimerCancel = startTimerBar(answerDuration, () => {
+      // Timeout: auto-submit with -1
+      if (!hasAnsweredCurrent && activeFlowId === flowId) {
+        hasAnsweredCurrent = true;
+        buttons.forEach((btn) => { btn.disabled = true; });
+        if (statusText) statusText.textContent = '⏰ หมดเวลาตอบ!';
+        const myPeerId = peerManager.peerId || 'local';
+        gameController.submitAnswer(myPeerId, -1, answerDuration * 1000);
+      }
+    });
+
+    // Attach click handlers to choices
+    buttons.forEach((btn) => {
+      btn.onclick = () => {
+        if (hasAnsweredCurrent || activeFlowId !== flowId) return;
+        hasAnsweredCurrent = true;
+        const timeUsedMs = Date.now() - answerStartTime;
+        const choiceIndex = parseInt(btn.getAttribute('data-index') || '0', 10);
+
+        if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
+        buttons.forEach((b) => { b.disabled = true; });
+        btn.classList.add('selected');
+
+        const secUsed = (timeUsedMs / 1000).toFixed(1);
+        if (statusText) {
+          statusText.textContent = peerManager.role === 'solo'
+            ? `⏳ ตอบแล้ว (${secUsed}s) กำลังเฉลย...`
+            : `⏳ ตอบแล้ว (${secUsed}s) กำลังรอผู้เล่นอื่น...`;
+        }
+
+        const myPeerId = peerManager.peerId || 'local';
+        gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
+      };
+    });
+  }, snippetDuration * 1000);
+}
+
+/**
+ * Timer Progress Bar with Urgent Pulse
+ */
+function startTimerBar(durationSec: number, onExpire?: () => void): () => void {
   const totalMs = durationSec * 1000;
   const startTime = Date.now();
   let animId: number | null = null;
@@ -59,7 +688,7 @@ function startQuestionTimer(
     if (bar) bar.style.width = `${percent}%`;
     if (secEl) secEl.textContent = String(remainingSec);
 
-    // Urgent Threshold: <= 3 seconds remaining (or <= 25%)
+    // Urgent Threshold: <= 3 seconds remaining
     if (remainingSec <= 3 && remainingMs > 0) {
       if (bar) bar.classList.add('timer-urgent-bar');
       if (container) container.classList.add('timer-urgent-pulse');
@@ -86,564 +715,51 @@ function startQuestionTimer(
   };
 }
 
-function renderScoreboardItems(players: PlayerInfo[]): string {
-  const colors = [
-    'accent-purple',
-    'accent-blue',
-    'accent-pink',
-    'accent-cyan',
-    'accent-green',
-    'accent-yellow',
-    'orange-400',
-    'rose-400',
-    'indigo-400',
-    'teal-400',
-  ];
-  return players.map((p, i) => {
-    const color = colors[i % colors.length];
-    const formattedScore = Number.isInteger(p.score) ? String(p.score) : p.score.toFixed(1);
-    return `
-      <div class="score-item !py-1 !px-2 text-xs flex items-center gap-1.5" id="score-${p.peerId.replace(/[^a-zA-Z0-9]/g, '_')}">
-        <span class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold bg-${color}/20 text-${color}">${p.name.charAt(0).toUpperCase()}</span>
-        <span class="text-text-primary max-w-[80px] truncate">${p.name}</span>
-        <span class="text-${color} font-bold" id="score-val-${p.peerId.replace(/[^a-zA-Z0-9]/g, '_')}">${formattedScore}</span>
-      </div>
-    `;
-  }).join('');
-}
-
-function updateScoreboardUI(players: PlayerInfo[], departedName?: string): void {
-  const sb = document.getElementById('scoreboard-container');
-  if (sb) {
-    sb.innerHTML = renderScoreboardItems(players);
-  }
-  if (departedName) {
-    const alertEl = document.getElementById('player-disconnect-alert');
-    if (alertEl) {
-      alertEl.textContent = `⚠️ ผู้เล่น "${departedName}" ออกจากเกมแล้ว`;
-      alertEl.classList.remove('hidden');
-      setTimeout(() => alertEl.classList.add('hidden'), 3500);
-    }
-  }
-}
-
-export function renderGameScreen(): void {
-  // Clean up previous
-  if (currentSegmentCancel) { currentSegmentCancel(); currentSegmentCancel = null; }
-  if (countdownCancel) { countdownCancel(); countdownCancel = null; }
-  if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
-  mediaEngine.stop();
-  hasRevealedCurrentQuestion = false;
-
-  // Capture question data BEFORE setScreen so we can use it after DOM mount
-  const question = gameController.currentQuestion;
-  const isHost = peerManager.isHost;
-
-  setScreen(() => {
-    const container = document.createElement('div');
-    container.className = 'min-h-[100dvh] flex flex-col px-3 py-3 sm:px-4 sm:py-4';
-
-    // If no active question in memory (e.g. reload or ended), return to /main
-    if (!question) {
-      setTimeout(() => navigate('/main'), 0);
-      return container;
-    }
-
-    const totalQ = gameController.totalQuestions;
-    const currentIdx = gameController.currentIndex;
-    const players = gameController.players;
-    const config = gameController.config;
-
-    container.innerHTML = `
-      <!-- Header: Progress + Scoreboard -->
-      <div class="w-full max-w-3xl mx-auto mb-3 animate-fade-in">
-        <!-- Progress Bar -->
-        <div class="flex items-center gap-2 mb-2">
-          <span class="text-text-secondary text-xs font-semibold">ข้อ ${currentIdx + 1}/${totalQ}</span>
-          <div class="flex-1 h-1.5 bg-bg-card rounded-full overflow-hidden">
-            <div class="h-full bg-gradient-to-r from-accent-purple to-accent-blue rounded-full transition-all duration-500" style="width: ${((currentIdx + 1) / totalQ) * 100}%"></div>
-          </div>
-          <span class="text-text-muted text-xs">${question.points}pt</span>
-        </div>
-        
-        <!-- Scoreboard -->
-        <div class="flex flex-wrap gap-1.5 justify-center" id="scoreboard-container">
-          ${renderScoreboardItems(players)}
-        </div>
-        <div id="player-disconnect-alert" class="hidden text-center text-xs text-accent-yellow font-semibold mt-1"></div>
-      </div>
-
-      <!-- Media Wrapper -->
-      <div class="w-full max-w-3xl mx-auto mb-3 animate-slide-up">
-        <div class="media-wrapper relative overflow-hidden" id="media-container">
-          <!-- Anti-Spoiler Top Mask covering YouTube Title Header -->
-          <div class="anti-spoiler-mask" id="anti-spoiler-mask">
-            <div class="flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full ${question.type === 'video' ? 'bg-accent-blue' : 'bg-accent-purple'} animate-pulse"></span>
-              <span class="font-heading font-bold text-xs sm:text-sm text-text-primary tracking-wide">
-                GuessThe? <span class="gradient-text font-semibold">${question.type === 'video' ? 'MV' : 'Music'}</span>
-              </span>
-            </div>
-            <span class="text-[10px] sm:text-xs text-accent-purple bg-accent-purple/15 border border-accent-purple/30 px-2.5 py-0.5 rounded-full font-medium">
-              ${question.type === 'video' ? '🎬 ทาย MV (ดูคลิป)' : '🎵 ทายเพลง (ฟังเสียง)'}
-            </span>
-          </div>
-
-          <!-- HTML5 Media Player Container (Zero opacity in audio mode to block any visuals) -->
-          <div id="media-player-container" class="w-full h-full pointer-events-none transition-opacity duration-300 ${question.type === 'audio' ? 'opacity-0' : 'opacity-100'}"></div>
-
-          <!-- Curtain Overlay (100% solid pitch black in audio mode to guarantee zero thumbnail bleeding) -->
-          <div id="media-curtain" class="absolute inset-0 ${question.type === 'audio' ? 'bg-[#0a0a14] z-20' : 'bg-bg-primary/95 backdrop-blur-md z-20'} flex flex-col items-center justify-center gap-2">
-            ${question.type === 'audio' ? `
-              <div class="audio-visualizer mb-1" id="audio-viz">
-                ${Array.from({ length: 12 }, () => `<div class="audio-bar" style="--bar-height: ${35 + Math.random() * 55}%; height: 30%;"></div>`).join('')}
-              </div>
-              <p class="font-heading font-bold text-sm sm:text-base text-text-primary" id="curtain-title">🎵 โหมดฟังเสียงเพลง</p>
-              <p class="text-text-muted text-xs" id="curtain-sub">รอฟังเพลงให้จบก่อนเริ่มตอบ</p>
-            ` : `
-              <div class="text-3xl sm:text-4xl animate-float">🎬</div>
-              <p class="font-heading font-bold text-sm sm:text-base text-text-primary" id="curtain-title">กำลังเตรียมคลิป...</p>
-              <p class="text-text-muted text-xs" id="curtain-sub">รอสัญญาณนับถอยหลัง</p>
-            `}
-          </div>
-        </div>
-      </div>
-
-      <!-- Countdown / Loading Overlay -->
-      <div id="countdown-overlay" class="countdown-overlay">
-        <div id="countdown-content" class="flex flex-col items-center justify-center gap-3">
-          <div class="spinner !w-12 !h-12 !border-4"></div>
-          <p class="font-heading text-sm sm:text-base font-bold text-text-primary tracking-wider uppercase animate-pulse">
-            🎵 กำลังโหลดเพลง...
-          </p>
-        </div>
-      </div>
-
-      <!-- Question Timer Bar with Urgent State -->
-      <div id="timer-container" class="w-full max-w-3xl mx-auto mb-2.5 px-1 transition-all duration-300">
-        <div class="flex items-center justify-between text-xs font-bold font-mono mb-1.5 px-0.5">
-          <div class="flex items-center gap-1.5" id="timer-label-box">
-            <span class="text-sm" id="timer-icon">⏳</span>
-            <span class="text-text-secondary uppercase tracking-wider text-[11px]" id="timer-label">เวลาตอบ</span>
-          </div>
-          <div class="flex items-center gap-1 font-mono text-sm sm:text-base font-extrabold text-accent-cyan transition-colors" id="timer-text-wrap">
-            <span id="timer-seconds">${config.guessDuration}</span><span class="text-xs">s</span>
-          </div>
-        </div>
-        
-        <div class="timer-bar-wrapper w-full h-3 sm:h-3.5 bg-black/50 rounded-full p-0.5 border border-border-subtle/80 overflow-hidden shadow-inner relative">
-          <div
-            id="timer-progress-bar"
-            class="h-full rounded-full transition-all ease-linear"
-            style="width: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6, #06b6d4);"
-          ></div>
-        </div>
-      </div>
-
-      <!-- Choice Buttons -->
-      <div class="w-full max-w-3xl mx-auto flex-1 flex flex-col justify-end animate-slide-up stagger-2">
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3 w-full" id="choices-grid">
-          ${question.options.map((opt, i) => {
-            const labels = ['A', 'B', 'C', 'D'];
-            return `
-              <button class="choice-btn" id="choice-${i}" data-index="${i}" disabled>
-                <span class="choice-label">${labels[i]}</span>
-                <span class="flex-1 truncate">${opt}</span>
-                <div class="player-badges hidden flex-wrap gap-1 mt-1" id="badges-${i}"></div>
-              </button>
-            `;
-          }).join('')}
-        </div>
-
-        <!-- Status Bar -->
-        <div id="status-bar" class="text-center py-3">
-          <span class="text-text-muted text-sm" id="status-text">🎵 กำลังเตรียมเพลง...</span>
-        </div>
-      </div>
-    `;
-
-    // Setup network listeners for multiplayer synchronization
-    // Use on() (full replace) to prevent stale lobby callbacks from firing during gameplay
-    if (isHost && peerManager.role === 'host') {
-      peerManager.on({
-        onReceive: (peerId, packet) => {
-          if (packet.type === 'PLAYER_SUBMIT') {
-            gameController.receiveAnswer(packet.peerId || peerId, packet.choiceIndex);
-          }
-        },
-        onPlayerJoin: () => {
-          // Reject mid-game joins — game already started
-          console.warn('[GameScreen] Player tried to join mid-game, ignoring');
-        },
-        onPlayerLeave: (peerId) => {
-          const departing = gameController.players.find((p) => p.peerId === peerId);
-          gameController.removePlayer(peerId);
-          // Broadcast to remaining players
-          peerManager.broadcast({
-            type: 'PLAYER_LEAVE',
-            peerId,
-            remainingPlayers: gameController.players,
-          });
-          // Update host scoreboard
-          updateScoreboardUI(gameController.players, departing?.name);
-        },
-      });
-    } else if (!isHost) {
-      peerManager.on({
-        onReceive: (_peerId, packet) => {
-          handleGamePacket(packet);
-        },
-        onPlayerLeave: (peerId) => {
-          if (peerId === peerManager.hostPeerId) {
-            alert('⚠️ Host ออกจากห้องแล้ว เกมยุติ');
-            navigate('/main');
-          }
-        },
-        onError: (err) => {
-          console.warn('Network error in game:', err);
-        },
-      });
-    }
-
-    // Synchronized Reveal: Trigger showReveal whenever REVEAL phase is emitted
-    gameController.onPhaseChange((phase) => {
-      if (phase === 'REVEAL') {
-        const curQ = gameController.currentQuestion;
-        if (curQ) {
-          showReveal(curQ);
-        }
-      }
-    });
-
-    return container;
-  });
-
-  // ── AFTER setScreen: DOM is now mounted, #media-player-container exists ──
-  // Start the game flow ONLY if we have a valid question
-  if (question) {
-    const currentFlowId = ++activeFlowId;
-    // Use queueMicrotask to ensure setScreen's appendChild is fully flushed
-    queueMicrotask(() => {
-      initGameFlow(question, currentFlowId);
-    });
-  }
-}
-
-async function initGameFlow(question: QuestionSession, flowId: number): Promise<void> {
-  const countdownOverlay = document.getElementById('countdown-overlay');
-
-  let playerFailed = false;
-
-  try {
-    // 1. Resolve Direct Stream URL & Prebuffer Media Player with 8-second timeout
-    await Promise.race([
-      mediaEngine.initAndPrebuffer(
-        'media-player-container',
-        question.youtubeId,
-        question.type,
-        question.startTime
-      ),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('โหลดคลิปเกินกำหนด ข้ามไปเล่นต่อทันที')), 8000)
-      )
-    ]);
-    if (activeFlowId !== flowId) return;
-  } catch (e) {
-    // Media player failed or timed out (> 8s)
-    console.warn('Media player failed or timed out, continuing without media:', e);
-    playerFailed = true;
-
-    // Show error in media container
-    const mediaContainer = document.getElementById('media-container');
-    if (mediaContainer) {
-      mediaContainer.innerHTML = `
-        <div class="flex flex-col items-center justify-center gap-2 p-6 text-center">
-          <span class="text-3xl">⚠️</span>
-          <p class="text-accent-yellow text-sm font-semibold">ข้ามวิดีโอเนื่องจากโหลดเกินเวลาหรือไม่สามารถดึงสตรีมได้</p>
-          <p class="text-text-muted text-xs">เลือกคำตอบจากตัวเลือกด้านล่างได้ตามปกติ</p>
-        </div>
-      `;
-    }
-  }
-
-  if (activeFlowId !== flowId) return;
-
-  // 2. Start Countdown Phase (3..2..1) ONLY after buffering is complete!
-  if (countdownOverlay) {
-    countdownOverlay.innerHTML = `<div class="countdown-number" id="countdown-number">3</div>`;
-  }
-  const countdownNumber = document.getElementById('countdown-number');
-
-  const { cancel } = countdown(3, (n) => {
-    if (activeFlowId !== flowId) return;
-    if (countdownNumber) {
-      countdownNumber.textContent = String(n);
-      countdownNumber.style.animation = 'none';
-      void countdownNumber.offsetHeight;
-      countdownNumber.style.animation = 'countdownPulse 1s ease-out';
-    }
-  }, () => {
-    if (activeFlowId !== flowId) return;
-    // Countdown complete → Guessing Phase
-    if (countdownOverlay) countdownOverlay.style.display = 'none';
-    
-    if (playerFailed || !mediaEngine.isReady) {
-      // No media — skip to guessing directly, enable buttons
-      startGuessingPhaseNoMedia(question);
-    } else {
-      startGuessingPhase(question);
-    }
-  });
-  countdownCancel = cancel;
-}
-
-/** Guessing phase without media (when YouTube embed is blocked or timed out) */
-function startGuessingPhaseNoMedia(question: QuestionSession): void {
-  const config = gameController.config;
-  const snippetSec = config.snippetDuration || 3;
-  const answerSec = config.guessDuration || 10;
-  const statusText = document.getElementById('status-text');
-  const buttons = document.querySelectorAll('.choice-btn') as NodeListOf<HTMLButtonElement>;
-
-  // STAGE 1: Lock buttons during snippet period
-  buttons.forEach((btn) => {
-    btn.disabled = true;
-    btn.classList.add('opacity-60', 'cursor-not-allowed');
-  });
-
-  if (statusText) {
-    statusText.innerHTML = `⏳ แสดงคำถาม... <span class="text-accent-cyan font-bold">${snippetSec}s</span> (รอเปิดระบบตอบ)`;
-  }
-
-  // After snippet duration, transition to STAGE 2: Answering Phase
-  setTimeout(() => {
-    buttons.forEach((btn) => {
-      btn.disabled = false;
-      btn.classList.remove('opacity-60', 'cursor-not-allowed');
-    });
-
-    if (statusText) {
-      statusText.innerHTML = '⏰ <span class="text-accent-cyan font-bold">เลือกคำตอบเร็ว!</span> (ยิ่งตอบเร็วยิ่งได้แต้มเยอะ)';
-    }
-
-    const answerStartTime = Date.now();
-    let hasAnswered = false;
-
-    // Start question countdown timer
-    if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
-    currentTimerCancel = startQuestionTimer(answerSec, () => {
-      // Timeout expired without answer
-      buttons.forEach((btn) => { btn.disabled = true; });
-      if (statusText) statusText.textContent = '⏰ หมดเวลาตอบ!';
-      const myPeerId = peerManager.peerId || 'local';
-      if (!hasAnswered) {
-        hasAnswered = true;
-        gameController.submitAnswer(myPeerId, -1, answerSec * 1000);
-      }
-    });
-
-    // Enable choice buttons
-    buttons.forEach((btn) => {
-      btn.onclick = () => {
-        if (hasAnswered) return;
-        hasAnswered = true;
-        const timeUsedMs = Date.now() - answerStartTime;
-        const index = parseInt(btn.getAttribute('data-index') || '0');
-        handleChoiceClickNoMedia(index, timeUsedMs);
-      };
-    });
-  }, snippetSec * 1000);
-
-  if (peerManager.isHost) {
-    gameController.triggerGuessing();
-  }
-}
-
-function handleChoiceClickNoMedia(choiceIndex: number, timeUsedMs: number = 0): void {
-  if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
-  const timerContainer = document.getElementById('timer-container');
-  if (timerContainer) timerContainer.classList.remove('timer-urgent-pulse');
-
-  const myPeerId = peerManager.peerId || 'local';
-
-  const buttons = document.querySelectorAll('.choice-btn') as NodeListOf<HTMLButtonElement>;
-  buttons.forEach((btn) => { btn.disabled = true; });
-
-  const selectedBtn = document.getElementById(`choice-${choiceIndex}`);
-  if (selectedBtn) selectedBtn.classList.add('selected');
-
-  const statusText = document.getElementById('status-text');
-  const secUsed = (timeUsedMs / 1000).toFixed(1);
-  if (peerManager.role === 'solo') {
-    if (statusText) statusText.textContent = `⏳ ตอบแล้ว (${secUsed}s) กำลังเฉลย...`;
-  } else {
-    if (statusText) statusText.textContent = `⏳ ตอบแล้ว (${secUsed}s) กำลังรอผู้เล่นอื่น...`;
-  }
-  gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
-}
-
-function startGuessingPhase(question: QuestionSession): void {
-  const config = gameController.config;
-  const snippetSec = config.snippetDuration || 3;
-  const answerSec = config.guessDuration || 10;
-  const statusText = document.getElementById('status-text');
-  const curtain = document.getElementById('media-curtain');
-  const curtainTitle = document.getElementById('curtain-title');
-  const curtainSub = document.getElementById('curtain-sub');
-  const buttons = document.querySelectorAll('.choice-btn') as NodeListOf<HTMLButtonElement>;
-
-  // STAGE 1: Lock buttons during snippet period
-  buttons.forEach((btn) => {
-    btn.disabled = true;
-    btn.classList.add('opacity-60', 'cursor-not-allowed');
-  });
-
-  if (statusText) {
-    statusText.innerHTML = question.type === 'video'
-      ? `🎬 กำลังแสดงคลิปทาย... <span class="text-accent-cyan font-bold">${snippetSec}s</span> (รอคลิปจบเพื่อเริ่มตอบ)`
-      : `🎧 กำลังเปิดเสียงเพลงทาย... <span class="text-accent-cyan font-bold">${snippetSec}s</span> (รอเพลงจบเพื่อเริ่มตอบ)`;
-  }
-
-  // MV: uncover video to show the clip. Audio: keep curtain covered in solid black
-  if (question.type === 'video') {
-    if (curtain) curtain.classList.add('hidden');
-    mediaEngine.showVideo();
-  } else {
-    if (curtain) {
-      curtain.classList.remove('hidden');
-      if (curtainTitle) curtainTitle.textContent = '🎵 กำลังเล่นเสียงเพลง...';
-      if (curtainSub) curtainSub.textContent = `ฟังเสียงเพลง ${snippetSec} วินาที (รอเพลงจบเพื่อเริ่มตอบ)`;
-    }
-  }
-
-  // Play the snippet for snippetDuration seconds
-  const { cancel } = mediaEngine.playSnippet(question.startTime, snippetSec, () => {
-    // Snippet completed!
-    // Cover video immediately when paused to prevent preview freeze spoiler
-    if (curtain) {
-      if (curtainTitle) curtainTitle.textContent = 'หมดเวลาฟังเพลงแล้ว!';
-      if (curtainSub) curtainSub.textContent = 'เลือกคำตอบจากตัวเลือกด้านล่าง';
-      curtain.classList.remove('hidden');
-    }
-
-    // STAGE 2: Answering Phase — Unlock buttons & Start Answer Countdown Timer!
-    buttons.forEach((btn) => {
-      btn.disabled = false;
-      btn.classList.remove('opacity-60', 'cursor-not-allowed');
-    });
-
-    if (statusText) {
-      statusText.innerHTML = '⏰ <span class="text-accent-cyan font-bold">เลือกคำตอบเร็ว!</span> (ยิ่งตอบเร็วยิ่งได้แต้มเยอะ)';
-    }
-
-    const answerStartTime = Date.now();
-    let hasAnswered = false;
-
-    // Start question countdown timer
-    if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
-    currentTimerCancel = startQuestionTimer(answerSec, () => {
-      // Time expired
-      buttons.forEach((btn) => { btn.disabled = true; });
-      if (statusText) statusText.textContent = '⏰ หมดเวลาตอบ!';
-      const myPeerId = peerManager.peerId || 'local';
-      if (!hasAnswered) {
-        hasAnswered = true;
-        gameController.submitAnswer(myPeerId, -1, answerSec * 1000);
-      }
-    });
-
-    // Enable choice button clicks
-    buttons.forEach((btn) => {
-      btn.onclick = () => {
-        if (hasAnswered) return;
-        hasAnswered = true;
-        const timeUsedMs = Date.now() - answerStartTime;
-        const index = parseInt(btn.getAttribute('data-index') || '0');
-        handleChoiceClick(index, timeUsedMs);
-      };
-    });
-  });
-  currentSegmentCancel = cancel;
-
-  // Host triggers guessing state
-  if (peerManager.isHost) {
-    gameController.triggerGuessing();
-  }
-}
-
-function handleChoiceClick(choiceIndex: number, timeUsedMs: number = 0): void {
-  if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
-  const timerContainer = document.getElementById('timer-container');
-  if (timerContainer) timerContainer.classList.remove('timer-urgent-pulse');
-
-  const myPeerId = peerManager.peerId || 'local';
-  
-  // Lock all buttons
-  const buttons = document.querySelectorAll('.choice-btn') as NodeListOf<HTMLButtonElement>;
-  buttons.forEach((btn) => {
-    btn.disabled = true;
-  });
-
-  // Highlight selected
-  const selectedBtn = document.getElementById(`choice-${choiceIndex}`);
-  if (selectedBtn) selectedBtn.classList.add('selected');
-
-  // Update status
-  const statusText = document.getElementById('status-text');
-  const secUsed = (timeUsedMs / 1000).toFixed(1);
-  if (peerManager.role === 'solo') {
-    if (statusText) statusText.textContent = `⏳ ตอบแล้ว (${secUsed}s) กำลังเฉลย...`;
-  } else {
-    if (statusText) statusText.textContent = `⏳ ตอบแล้ว (${secUsed}s) กำลังรอผู้เล่นอื่น...`;
-  }
-  gameController.submitAnswer(myPeerId, choiceIndex, timeUsedMs);
-}
-
+/**
+ * ─────────────────────────────────────────────────────────────
+ * REVEAL PHASE (5 Seconds Video / Audio Uncovered)
+ * ─────────────────────────────────────────────────────────────
+ */
 function showReveal(question: QuestionSession): void {
-  if (hasRevealedCurrentQuestion) return;
-  hasRevealedCurrentQuestion = true;
-
-  if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
-  const timerContainer = document.getElementById('timer-container');
-  if (timerContainer) {
-    timerContainer.classList.remove('timer-urgent-pulse');
-    timerContainer.classList.add('opacity-40');
-  }
-  const timerBar = document.getElementById('timer-progress-bar');
-  if (timerBar) {
-    timerBar.style.width = '0%';
-    timerBar.classList.remove('timer-urgent-bar');
-  }
+  cleanupTimers();
 
   const config = gameController.config;
   const answers = gameController.answers;
   const players = gameController.players;
-  const statusText = document.getElementById('status-text');
+  const media = document.getElementById('game-media') as HTMLVideoElement | null;
   const curtain = document.getElementById('media-curtain');
+  const statusText = document.getElementById('status-text');
 
-  if (statusText) statusText.textContent = `🎵 เฉลย: ${question.title}`;
-
-  // Uncover video and play reveal audio only if media is ready
-  if (mediaEngine.isReady) {
-    mediaEngine.showVideo();
-    const playerContainer = document.getElementById('media-player-container');
-    if (playerContainer) {
-      playerContainer.classList.remove('opacity-0');
-      playerContainer.classList.add('opacity-100');
-    }
-    if (curtain) {
-      curtain.classList.add('hidden');
-    }
-
-    // Play reveal audio/video continuously for revealDuration
-    const revealStart = (typeof question.revealStartTime === 'number' && question.revealStartTime >= 0)
-      ? question.revealStartTime
-      : question.startTime;
-    const { cancel } = mediaEngine.playReveal(revealStart, config.revealDuration);
-    currentSegmentCancel = cancel;
+  if (statusText) {
+    statusText.innerHTML = `🎵 เฉลย: <span class="text-accent-cyan font-bold">${question.title}</span>`;
   }
 
-  // Update choice buttons — correct/wrong + player badges
+  // Uncover video & play reveal audio
+  if (curtain) curtain.classList.add('hidden');
+  const revealStart = (typeof question.revealStartTime === 'number' && question.revealStartTime >= 0)
+    ? question.revealStartTime
+    : question.startTime;
+
+  if (currentPlaybackMode === 'html5' && media && media.src) {
+    media.classList.remove('opacity-0');
+    media.classList.add('opacity-100');
+    media.muted = false;
+    media.volume = 1.0;
+
+    try {
+      media.currentTime = revealStart;
+      media.play().catch(() => {});
+    } catch {}
+  } else if (currentPlaybackMode === 'youtube') {
+    const ytWrap = document.getElementById('game-yt-player-wrap');
+    if (ytWrap) ytWrap.classList.remove('hidden');
+    if (ytPlayerInstance) {
+      if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+      activeSegmentCancel = ytPlayReveal(ytPlayerInstance, revealStart, config.revealDuration).cancel;
+    }
+  }
+
+  // Highlight correct / wrong answers
   const buttons = document.querySelectorAll('.choice-btn') as NodeListOf<HTMLButtonElement>;
   buttons.forEach((btn, i) => {
     btn.disabled = true;
@@ -652,84 +768,281 @@ function showReveal(question: QuestionSession): void {
     if (i === question.correctIndex) {
       btn.classList.add('correct');
     } else {
-      // Only mark wrong if someone picked it
       const pickedByAnyone = Object.values(answers).includes(i);
-      if (pickedByAnyone) {
-        btn.classList.add('wrong');
-      }
+      if (pickedByAnyone) btn.classList.add('wrong');
     }
 
-    // Show player badges under each choice
+    // Show badges of who picked what
     const playersWhoChose = Object.entries(answers)
       .filter(([, choice]) => choice === i)
       .map(([peerId]) => {
         const p = players.find((pl) => pl.peerId === peerId);
-        return p?.name || peerId.substring(0, 6);
+        return p?.name || peerId.substring(0, 5);
       });
 
-    if (playersWhoChose.length > 0) {
-      const badgesContainer = document.getElementById(`badges-${i}`);
-      if (badgesContainer) {
+    const badgesContainer = document.getElementById(`badges-${i}`);
+    if (badgesContainer) {
+      if (playersWhoChose.length > 0) {
         badgesContainer.classList.remove('hidden');
         badgesContainer.innerHTML = playersWhoChose.map((name) => `
           <span class="player-badge">${name}</span>
         `).join('');
-        // Move badges after the button text
-        btn.appendChild(badgesContainer);
+      } else {
+        badgesContainer.classList.add('hidden');
       }
     }
   });
 
-  // Update scoreboard
-  players.forEach((p) => {
-    const scoreEl = document.getElementById(`score-val-${p.peerId.replace(/[^a-zA-Z0-9]/g, '_')}`);
-    if (scoreEl) {
-      scoreEl.textContent = String(p.score);
-      scoreEl.parentElement?.classList.add('score-update');
-      setTimeout(() => scoreEl.parentElement?.classList.remove('score-update'), 500);
-    }
-  });
+  // Update top scoreboard
+  updateScoreboardUI(players);
 
-  // After reveal duration, move to next question
-  setTimeout(() => {
-    if (currentSegmentCancel) { currentSegmentCancel(); currentSegmentCancel = null; }
-    mediaEngine.stop();
-    
+  // Reveal duration (5 seconds) -> Transition to INTERMEDIATE LEADERBOARD
+  revealTimeout = setTimeout(() => {
+    if (currentPlaybackMode === 'html5' && media) {
+      try { media.pause(); } catch {}
+    } else if (currentPlaybackMode === 'youtube' && ytPlayerInstance) {
+      if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+      try { stopPlayer(ytPlayerInstance); } catch {}
+    }
+
     if (peerManager.isHost || peerManager.role === 'solo') {
-      gameController.nextQuestion();
-      
-      if (gameController.phase === 'GAME_OVER') {
-        mediaEngine.destroy();
+      const nextIdx = gameController.currentIndex + 1;
+      if (nextIdx >= gameController.totalQuestions) {
+        // Game completed -> Navigate to final results
+        gameController.gameOver();
         navigate('/results');
       } else {
-        // Re-render for next question
-        renderGameScreen();
+        // Transition to Intermediate Leaderboard
+        gameController.triggerIntermediateLeaderboard();
       }
     }
-    // Client will receive STATE_COUNTDOWN or GAME_OVER packet from Host and navigate / re-render
   }, config.revealDuration * 1000);
 }
 
-function handleGamePacket(packet: NetworkPacket): void {
+/**
+ * ─────────────────────────────────────────────────────────────
+ * INTERMEDIATE LEADERBOARD (FLIP Animation & Double-Buffering)
+ * ─────────────────────────────────────────────────────────────
+ */
+function showIntermediateLeaderboard(): void {
+  cleanupTimers();
+
+  const overlay = document.getElementById('intermediate-leaderboard-overlay');
+  const titleEl = document.getElementById('intermediate-title');
+  const container = document.getElementById('flip-leaderboard-list');
+  const progressBar = document.getElementById('intermediate-progress');
+  const totalQ = gameController.totalQuestions;
+  const currentIdx = gameController.currentIndex;
+  const isHost = peerManager.isHost;
+  const myPeerId = peerManager.peerId || 'local';
+
+  if (overlay) overlay.classList.remove('hidden');
+  if (titleEl) titleEl.textContent = `🏆 สรุปคะแนน (ข้อ ${currentIdx + 1}/${totalQ})`;
+
+  // 1. FLIP ANIMATION: Capture First positions before DOM updates
+  if (container) {
+    const existingCards = container.querySelectorAll('.flip-card') as NodeListOf<HTMLElement>;
+    previousCardTops.clear();
+    existingCards.forEach((card) => {
+      const id = card.getAttribute('data-peer-id');
+      if (id) {
+        previousCardTops.set(id, card.getBoundingClientRect().top);
+      }
+    });
+
+    // Update DOM order with newly sorted players
+    container.innerHTML = renderIntermediateCards(gameController.players, gameController.lastScoreDeltas);
+
+    // FLIP: Calculate Last positions, Invert, and Play
+    requestAnimationFrame(() => {
+      const updatedCards = container.querySelectorAll('.flip-card') as NodeListOf<HTMLElement>;
+      updatedCards.forEach((card) => {
+        const id = card.getAttribute('data-peer-id');
+        if (id && previousCardTops.has(id)) {
+          const firstTop = previousCardTops.get(id)!;
+          const lastTop = card.getBoundingClientRect().top;
+          const deltaY = firstTop - lastTop;
+
+          if (deltaY !== 0) {
+            // Invert
+            card.style.transform = `translateY(${deltaY}px)`;
+            card.style.transition = 'none';
+
+            // Play
+            requestAnimationFrame(() => {
+              card.style.transition = 'transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)';
+              card.style.transform = '';
+            });
+          }
+        }
+      });
+    });
+  }
+
+  // 2. DOUBLE-BUFFERING PIPELINE: Pre-buffer Question N+1 in background
+  const nextIdx = currentIdx + 1;
+  const nextQuestion = gameController.questions[nextIdx];
+
+  if (nextQuestion && !isPreparingNext) {
+    isPreparingNext = true;
+    (async () => {
+      try {
+        const streamUrl = await resolveStreamUrl(nextQuestion.youtubeId, nextQuestion.type, 2000);
+        const media = document.getElementById('game-media') as HTMLVideoElement | null;
+        if (media) {
+          currentPlaybackMode = 'html5';
+          media.src = streamUrl;
+          media.muted = true;
+          media.currentTime = Math.max(0, nextQuestion.startTime);
+          media.load();
+        }
+      } catch (err) {
+        console.warn('[DoubleBuffering] Direct stream prebuffer failed, using YouTube fallback:', err);
+        currentPlaybackMode = 'youtube';
+      } finally {
+        isPreparingNext = false;
+        // Signal ready for next question
+        if (isHost) {
+          gameController.setPlayerReady(myPeerId, nextIdx);
+        } else {
+          peerManager.sendBufferReady(nextIdx);
+        }
+      }
+    })();
+  }
+
+  // 3. Animate progress bar across 4.5 seconds
+  if (progressBar) {
+    progressBar.style.transition = 'none';
+    progressBar.style.width = '100%';
+    requestAnimationFrame(() => {
+      progressBar.style.transition = 'width 4.5s linear';
+      progressBar.style.width = '0%';
+    });
+  }
+
+  // 4. Advance to next question countdown after 4.5 seconds
+  intermediateTimeout = setTimeout(() => {
+    if (isHost || peerManager.role === 'solo') {
+      gameController.nextQuestion();
+      renderGameScreen();
+    }
+  }, 4500);
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────
+ * MULTIPLAYER NETWORK LISTENERS & PROTOCOL
+ * ─────────────────────────────────────────────────────────────
+ */
+function setupMultiplayerListeners(isHost: boolean, myPeerId: string): void {
+  if (isHost && peerManager.role === 'host') {
+    peerManager.on({
+      onReceive: (peerId, packet) => {
+        handleHostPacket(peerId, packet);
+      },
+      onPlayerJoin: () => {
+        console.warn('[GameScreen] Player tried to join mid-game, rejecting');
+      },
+      onPlayerLeave: (peerId) => {
+        const departing = gameController.players.find((p) => p.peerId === peerId);
+        gameController.removePlayer(peerId);
+        peerManager.broadcast({
+          type: 'PLAYER_LEAVE',
+          peerId,
+          remainingPlayers: gameController.players,
+        });
+        updateScoreboardUI(gameController.players, departing?.name);
+      },
+    });
+  } else if (!isHost) {
+    peerManager.on({
+      onReceive: (_peerId, packet) => {
+        handleClientPacket(packet, myPeerId);
+      },
+      onPlayerLeave: (peerId) => {
+        if (peerId === peerManager.hostPeerId) {
+          alert('⚠️ Host ออกจากห้องแล้ว เกมสิ้นสุด');
+          navigate('/main');
+        }
+      },
+      onError: (err) => {
+        console.warn('[GameScreen] Network error:', err);
+      },
+    });
+  }
+
+  // Local phase change listener
+  gameController.onPhaseChange((phase) => {
+    if (phase === 'REVEAL') {
+      const curQ = gameController.currentQuestion;
+      if (curQ) showReveal(curQ);
+    } else if (phase === 'COUNTDOWN') {
+      const curQ = gameController.currentQuestion;
+      if (curQ) startQuestionFlow(curQ, activeFlowId);
+    } else if (phase === 'INTERMEDIATE_LEADERBOARD') {
+      showIntermediateLeaderboard();
+    }
+  });
+}
+
+function handleHostPacket(peerId: string, packet: NetworkPacket): void {
   switch (packet.type) {
-    case 'STATE_COUNTDOWN':
-      // Client: only re-render if transitioning to a NEW question!
-      if (gameController.currentIndex !== packet.questionIndex) {
-        gameController.setQuestionIndex(packet.questionIndex);
-        renderGameScreen();
+    case 'BUFFER_READY': {
+      const allReady = gameController.setPlayerReady(peerId, packet.questionIndex);
+      updatePlayerReadyStatus(peerId, true);
+
+      if (gameController.phase === 'INITIAL_BUFFERING' && allReady) {
+        if (hardTimeoutTimer) clearInterval(hardTimeoutTimer);
+        setTimeout(() => {
+          gameController.startCountdown(packet.questionIndex);
+        }, 350);
       }
       break;
+    }
 
-    case 'TRIGGER_GUESS':
+    case 'SUBMIT_ANSWER':
+    case 'PLAYER_SUBMIT': {
+      gameController.receiveAnswer(peerId, packet.choiceIndex, packet.timeUsedMs);
       break;
+    }
+  }
+}
+
+function handleClientPacket(packet: NetworkPacket, _myPeerId: string): void {
+  switch (packet.type) {
+    case 'ALL_READY':
+    case 'FORCE_START':
+    case 'STATE_COUNTDOWN': {
+      if (packet.type === 'FORCE_START') {
+        const slowBanner = document.getElementById('slow-network-banner');
+        if (slowBanner) slowBanner.classList.remove('hidden');
+      }
+
+      if (gameController.currentIndex !== packet.questionIndex) {
+        gameController.setQuestionIndex(packet.questionIndex);
+      }
+
+      const q = gameController.currentQuestion;
+      if (q) {
+        startQuestionFlow(q, activeFlowId);
+      }
+      break;
+    }
 
     case 'TRIGGER_REVEAL': {
       gameController.receiveReveal(
         packet.answers,
         packet.scores,
         packet.correctCounts,
-        packet.wrongCounts
+        packet.wrongCounts,
+        (packet as any).lastScoreDeltas
       );
+      break;
+    }
+
+    case 'SHOW_INTERMEDIATE_LEADERBOARD': {
+      showIntermediateLeaderboard();
       break;
     }
 
@@ -740,19 +1053,128 @@ function handleGamePacket(packet: NetworkPacket): void {
       break;
     }
 
-    case 'GAME_OVER':
-      mediaEngine.destroy();
+    case 'GAME_OVER': {
       gameController.receiveGameOver(
         packet.finalScores,
         packet.correctCounts,
-        packet.wrongCounts
+        packet.wrongCounts,
+        packet.finalLeaderboard
       );
       navigate('/results');
       break;
+    }
+  }
+}
 
-    case 'REMATCH':
-      gameController.receiveGameInit(packet.questions, packet.config, packet.players);
-      renderGameScreen();
-      break;
+/**
+ * ─────────────────────────────────────────────────────────────
+ * UI RENDERING HELPERS
+ * ─────────────────────────────────────────────────────────────
+ */
+function renderScoreboardItems(players: PlayerInfo[]): string {
+  const colors = [
+    'accent-purple',
+    'accent-blue',
+    'accent-pink',
+    'accent-cyan',
+    'accent-green',
+    'accent-yellow',
+  ];
+  return players.map((p, i) => {
+    const col = colors[i % colors.length];
+    const scoreStr = Number.isInteger(p.score) ? String(p.score) : p.score.toFixed(1);
+    return `
+      <div class="score-item !py-1 !px-2.5 text-xs flex items-center gap-1.5 glass-card-light rounded-lg" id="score-${p.peerId.replace(/[^a-zA-Z0-9]/g, '_')}">
+        <span class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold bg-${col}/20 text-${col}">${p.name.charAt(0).toUpperCase()}</span>
+        <span class="text-text-primary max-w-[80px] truncate font-medium">${p.name}</span>
+        <span class="text-${col} font-bold font-mono" id="score-val-${p.peerId.replace(/[^a-zA-Z0-9]/g, '_')}">${scoreStr}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+function updateScoreboardUI(players: PlayerInfo[], departedName?: string): void {
+  const sb = document.getElementById('scoreboard-container');
+  if (sb) sb.innerHTML = renderScoreboardItems(players);
+
+  if (departedName) {
+    const alertEl = document.getElementById('player-alert-banner');
+    if (alertEl) {
+      alertEl.textContent = `⚠️ ผู้เล่น "${departedName}" ออกจากเกมแล้ว`;
+      alertEl.classList.remove('hidden');
+      setTimeout(() => alertEl.classList.add('hidden'), 3500);
+    }
+  }
+}
+
+function renderBufferingPlayersList(players: PlayerInfo[]): string {
+  return players.map((p) => `
+    <div class="flex items-center justify-between p-2.5 glass-card-light rounded-xl border border-border-subtle" id="buffering-player-${p.peerId.replace(/[^a-zA-Z0-9]/g, '_')}">
+      <div class="flex items-center gap-2 min-w-0">
+        <div class="w-7 h-7 rounded-full bg-accent-purple/20 text-accent-purple font-bold text-xs flex items-center justify-center flex-shrink-0">
+          ${p.name.charAt(0).toUpperCase()}
+        </div>
+        <span class="text-text-primary text-xs sm:text-sm font-semibold truncate">${p.name}</span>
+      </div>
+      <div id="ready-badge-${p.peerId.replace(/[^a-zA-Z0-9]/g, '_')}">
+        ${p.isReady ? `
+          <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold badge-ready flex items-center gap-1">
+            <span>✅</span> พร้อมแล้ว
+          </span>
+        ` : `
+          <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold badge-preparing flex items-center gap-1">
+            <div class="spinner !w-3 !h-3"></div> <span>กำลังเตรียมสื่อ...</span>
+          </span>
+        `}
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderIntermediateCards(players: PlayerInfo[], deltas: Record<string, number>): string {
+  const sorted = [...players].sort((a, b) => b.score - a.score);
+  const rankIcons = ['🥇', '🥈', '🥉'];
+
+  return sorted.map((p, rank) => {
+    const delta = deltas[p.peerId] || 0;
+    const deltaStr = delta > 0 ? `+${delta}` : '+0';
+    const rankLabel = rank < 3 ? rankIcons[rank] : `#${rank + 1}`;
+
+    return `
+      <div class="flip-card flex items-center justify-between p-3 glass-card-light rounded-xl border border-border-subtle hover:border-accent-cyan/40" data-peer-id="${p.peerId}">
+        <div class="flex items-center gap-3 min-w-0">
+          <span class="text-base font-bold font-mono w-6 text-center">${rankLabel}</span>
+          <div class="w-8 h-8 rounded-full bg-accent-blue/20 text-accent-cyan font-bold text-xs flex items-center justify-center flex-shrink-0">
+            ${p.name.charAt(0).toUpperCase()}
+          </div>
+          <div class="flex flex-col min-w-0">
+            <span class="text-text-primary text-sm font-semibold truncate">${p.name}</span>
+            <span class="text-[10px] text-text-muted">ความแม่นยำ: ${p.correctCount} ถูก / ${p.wrongCount} ผิด</span>
+          </div>
+        </div>
+        
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <span class="text-xs font-bold px-2 py-0.5 rounded-md ${delta > 0 ? 'bg-accent-green/20 text-accent-green border border-accent-green/30' : 'bg-white/5 text-text-muted'} font-mono">
+            ${deltaStr} pt
+          </span>
+          <span class="text-base font-extrabold text-accent-cyan font-mono">${p.score} pt</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function cleanupTimers(): void {
+  if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
+  if (currentCountdownCancel) { currentCountdownCancel(); currentCountdownCancel = null; }
+  if (snippetTimeout) { clearTimeout(snippetTimeout); snippetTimeout = null; }
+  if (revealTimeout) { clearTimeout(revealTimeout); revealTimeout = null; }
+  if (intermediateTimeout) { clearTimeout(intermediateTimeout); intermediateTimeout = null; }
+  if (hardTimeoutTimer) { clearInterval(hardTimeoutTimer); hardTimeoutTimer = null; }
+  if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+  if (ytPlayerInstance) {
+    try { stopPlayer(ytPlayerInstance); } catch {}
+    try { destroyPlayer(); } catch {}
+    ytPlayerInstance = null;
   }
 }
