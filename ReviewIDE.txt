@@ -1,21 +1,21 @@
 ═══════════════════════════════════════════════════
-  ReviewIDE — GitHub Pages Deployment Setup
+  ReviewIDE — Project Documentation Update (can.txt)
   Date: 2026-09-05
 ═══════════════════════════════════════════════════
 
-[DONE] ci: เพิ่มระบบ Build & Deploy อัตโนมัติไปยัง GitHub Pages ผ่าน GitHub Actions
+[DONE] docs: ปรับปรุงคู่มือ can.txt ให้เป็นเวอร์ชันล่าสุดและครอบคลุมทุกระบบ
 
-ไฟล์ที่เพิ่ม/แก้ไข:
-  - .github/workflows/deploy.yml (เพิ่ม workflow CI/CD)
-
-การทำงาน:
-  1. เมื่อมีการ push โค้ดเข้า branch main บน GitHub:
-     - GitHub Actions จะรัน build อัตโนมัติ (npm ci -> npm run build)
-     - นำโฟลเดอร์ dist ไป publish ขึ้น GitHub Pages ทันที
-  2. การตั้งค่าบน GitHub Repo:
-     - เข้า Settings -> Pages
-     - ในส่วน "Build and deployment" -> Source: ให้เลือกเป็น "GitHub Actions"
-     - เว็บจะออนไลน์ที่: https://thianrawit.github.io/GuessThe/
-
-Commit: 7716afc
+สิ่งที่อัปเดตใน can.txt:
+  1. โครงสร้างโปรเจกต์ใหม่:
+     - เพิ่ม .github/workflows/deploy.yml (ระบบ CI/CD GitHub Actions)
+  2. สเตจและฟังก์ชันใหม่ใน Game Screen:
+     - หน้า Initial Buffering พร้อมตัวตรวจเช็คสถานะโหลดของผู้เล่นทุกคน
+     - ระบบ Hard Timeout 10 วินาที พร้อมปุ่ม Force Start ของ Host
+     - หน้าจอนับถอยหลัง 3.. 2.. 1.. สีดำสนิท 100% ป้องกันวิดีโอรั่ว
+     - หน้ากาก Anti-Spoiler Header Mask ทึบแสง ปิดชื่อคลิปและ Avatar ของ YouTube มิดชิด
+     - การเล่นคลิปเฉลยเต็มรูปแบบ (Full Reveal Phase) ก่อนเข้าตารางคะแนน
+     - Logic สีปุ่มช้อยส์ใหม่: เขียวเสมอสำหรับข้อถูก / แดงเฉพาะข้อผิดที่ตนเองกด / Dim ปุ่มที่ไม่เกี่ยวข้อง
+     - หน้ากระดานคะแนนคั่นระหว่างข้อ (Intermediate Leaderboard) พร้อม FLIP Animation สลับการ์ดผู้เล่น
+  3. ระบบเครือข่าย Multiplayer:
+     - ป้องกันชื่อผู้เล่นซ้ำ และระบบ Clean-up Zombie Peer ที่หลุดการเชื่อมต่อ
 ═══════════════════════════════════════════════════
