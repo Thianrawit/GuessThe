@@ -1,35 +1,25 @@
-Review — การแก้ปัญหาชื่อผู้เล่นซ้ำในโหมดออนไลน์ (Multiplayer Duplicate Player Bug)
-========================================================================================
+Review — การแก้ปัญหากดสร้างห้องแล้วโหลดค้างไม่เสร็จ
+================================================================
 
-1. สาเหตุของปัญหา (Root Causes):
+1. สาเหตุของปัญหา (Root Cause):
 --------------------------------
-1.1 ฝั่ง Host ขาดการ Deduplicate ผู้เล่น:
-    - ใน `lobby-screen.ts` เมื่อ Host ได้รับ callback `onPlayerJoin(peerId, name)` ระบบนำไปเพิ่มลง `gameController.addPlayer(peerId, name, false)` ทันทีโดยไม่ได้ตรวจสอบว่ามีชื่อผู้เล่นซ้ำกันอยู่ในห้องหรือไม่
-    - หาก Client มีการเชื่อมต่อซ้ำ (เช่น กดปุ่มเบิ้ล, รีเฟรชหน้าจอ F5, หรือสัญญาณหลุดแล้ว Reconnect) จะได้ `peerId` ใหม่ แต่ชื่อเดิม ทำให้ `gameController` มองเป็น 2 ผู้เล่นที่มี `peerId` คนละตัวกัน จึงแสดงชื่อซ้ำ เช่น `asd (ผู้เล่น #2)` และ `asd (ผู้เล่น #3)`
-1.2 ฝั่ง Client ส่งคำขอ Join ซ้ำ (Duplicate Join Requests):
-    - ใน `home-screen.ts`: ปุ่ม "เข้าห้อง" (`btn-join-room`) ไม่มีตัวป้องกัน Double-click (`isNavigating` flag) ทำให้การกดเบิ้ลสั่งให้สร้าง Peer ซ้อนกัน 2 ตัว
-    - ใน `lobby-screen.ts`: ค่าเริ่มต้น `let roomCode = '';` แทนที่จะรับค่าจาก `params.room` ทำให้ตอนเริ่มต้นหน้าจอ Client เผลอเรนเดอร์กล่องให้กรอกรหัสห้องซ้ำชั่วขณะ และปุ่ม `#lobby-btn-join-room` ขาดการป้องกันการกดซ้ำ
-1.3 ใน `peer-manager.ts` ไม่เคลียร์ Peer เก่า:
-    - ฟังก์ชัน `joinRoom()` และ `createRoom()` ไม่ได้เรียก `this.destroy()` ก่อนเริ่มสร้าง Peer ตัวใหม่ ทำให้ Peer เก่าและ DataChannel เดิมยังค้างอยู่ในหน่วยความจำและยังคงเชื่อมต่อกับ Host อยู่
-    - เมื่อผู้เล่นปิดแท็บหรือรีเฟรชหน้าเว็บ ไม่ได้มี Event Listener `beforeunload` สั่งตัดการเชื่อมต่อแบบฉับพลัน
+- ใน `peer-manager.ts`: เมื่อก่อนหน้ามีการเพิ่ม `this.destroy()` เข้าไปในฟังก์ชัน `createRoom()` และ `joinRoom()` เพื่อล้างการเชื่อมต่อเก่า
+- แต่ในฟังก์ชัน `destroy()` มีคำสั่ง `this.callbacks = {};` ซึ่งทำการล้าง callback ทั้งหมดที่เพิ่งถูกลงทะเบียนจากหน้า `lobby-screen.ts` (เช่น `onOpen`, `onPlayerJoin`, `onError`) ทิ้งจนเกลี้ยง
+- ผลลัพธ์: เมื่อ PeerJS เชื่อมต่อสำเร็จและยิง event `open` ตัวฟังก์ชัน `this.callbacks.onOpen(id)` กลับกลายเป็น `undefined` ส่งผลให้คำสั่ง `isConnecting = false;` และ `renderLobbyContent();` ไม่ทำงาน หน้าจอเลยค้างอยู่ที่ "กำลังสร้างห้อง..." ไม่ยอมเปลี่ยนไปหน้ารหัสห้องและปุ่มเริ่มเกม
 
 2. วิธีการแก้ไข (Implemented Solutions):
 --------------------------------------
-2.1 เพิ่มระบบตรวจจับและแทนที่การเชื่อมต่อซ้ำที่ Host (`lobby-screen.ts`):
-    - ใน `onPlayerJoin(peerId, name)`:
-      - ตรวจสอบ `existingByPeer`: ถ้า `peerId` เดิมส่งมาซ้ำ ให้อัปเดตชื่อเดิม
-      - ตรวจสอบ `existingByName`: ถ้ามีผู้เล่นชื่อเดียวกันอยู่ในห้องแล้ว (ไม่ใช่ Host) ถือว่าเป็นการ Reconnect หรือการต่อเชื่อมซ้ำ ให้สั่ง `gameController.removePlayer(existingByName.peerId)` และสั่ง `peerManager.closeConnection(existingByName.peerId)` เพื่อตัดการเชื่อมต่อของผีตัวเก่าออกทันที แล้วแทนที่ด้วยการเชื่อมต่อใหม่
-2.2 ป้องกันการเชื่อมต่อซ้อนฝั่ง Client (`peer-manager.ts`):
-    - เพิ่ม `_isConnecting` flag และเรียก `this.destroy()` ทันทีเมื่อเรียก `joinRoom()` หรือ `createRoom()` ป้องกันไม่ให้มี Peer สองตัวทำงานพร้อมกัน
-    - เพิ่มฟังก์ชัน `closeConnection(peerId)` เพื่อให้ Host สามารถเตะการเชื่อมต่อเดิมที่หมดอายุออกได้
-    - เพิ่ม `window.addEventListener('beforeunload')` เคลียร์ Peer ทันทีเมื่อผู้เล่นรีเฟรชหรือปิดแท็บ
-2.3 ป้องกันการส่งคำขอซ้ำจากหน้าบ้าน (`home-screen.ts` & `lobby-screen.ts`):
-    - เพิ่มตัวแปร `isNavigating` ป้องกันการกดปุ่มซ้ำทั้งใน Solo, Create Room, และ Join Room
-    - กำหนดค่าเริ่มต้น `roomCode` ให้ตรงกับ `roomCodeParam` ทันที ป้องกันไม่ให้หน้าจอ Client แสดงช่องกรอกรหัสซ้ำ
-    - กรองข้อมูลซ้ำ (Deduplicate) ในแพ็กเก็ต `PLAYER_LIST` ฝั่ง Client เพื่อความปลอดภัยสองชั้น
+- แยกฟังก์ชัน `cleanupPeer()` ออกมาจาก `destroy()` ใน `peer-manager.ts`:
+  - `cleanupPeer()`: ล้างเฉพาะ Peer, Connections, Heartbeat Interval, และ LastSeen แต่ **คงค่า `callbacks` ไว้**
+  - ใน `createRoom()` และ `joinRoom()` เปลี่ยนมาเรียกใช้ `this.cleanupPeer()` แทน `this.destroy()` เพื่อให้ callback `onOpen`, `onPlayerJoin` ที่ lobby screen ส่งมายังคงทำงานได้ตามปกติ
+- เพิ่ม Safety Timeout (10 วินาที) ให้กับ `createRoom()` เผื่อกรณี Peer Server มีปัญหา จะได้แจ้งเตือนผู้ใช้แทนการค้างไม่สิ้นสุด
 
 3. ผลการทดสอบ (Verification):
 -----------------------------
-- รัน `npx.cmd tsc --noEmit`: ผ่าน 100% ไม่มี Error
+- รัน `npx.cmd tsc --noEmit`: ผ่าน 100%
 - รัน `npm.cmd run build`: ผ่าน Build สำเร็จ (Vite + TypeScript)
-- ตรวจสอบการเข้าห้องและการเรนเดอร์ในเบราว์เซอร์: แสดงผลถูกต้อง ไม่มีชื่อซ้ำ
+- ทดสอบการกด "สร้างห้อง" จริงผ่าน Browser Subagent:
+  - Spinner หายไปทันทีหลังจากเชื่อมต่อสำเร็จ
+  - แสดงรหัสห้อง 5 หลักชัดเจน
+  - แสดง TestHost 👑 Host (Online) ในรายชื่อผู้เล่น
+  - แสดงปุ่ม "🎮 เริ่มเกม!" พร้อมใช้งาน

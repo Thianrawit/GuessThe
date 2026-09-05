@@ -49,9 +49,32 @@ class PeerManager {
     this.callbacks = { ...this.callbacks, ...callbacks };
   }
 
+  /** Clean up active peer and connections without wiping callbacks */
+  cleanupPeer(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+
+    for (const conn of this.connections.values()) {
+      try { conn.close(); } catch { /* ignore */ }
+    }
+    this.connections.clear();
+    this.lastSeen.clear();
+
+    if (this.peer) {
+      try { this.peer.destroy(); } catch { /* ignore */ }
+      this.peer = null;
+    }
+
+    this._roomCode = '';
+    this._peerId = '';
+    this._isConnecting = false;
+  }
+
   /** Create a room as Host */
   async createRoom(roomCode: string): Promise<string> {
-    this.destroy();
+    this.cleanupPeer();
     this._role = 'host';
     this._roomCode = roomCode;
 
@@ -61,7 +84,14 @@ class PeerManager {
         debug: 0,
       });
 
+      const timer = setTimeout(() => {
+        const errMsg = 'หมดเวลาสร้างห้อง (การเชื่อมต่อกับ Peer Server ขัดข้อง กรุณาลองใหม่)';
+        if (this.callbacks.onError) this.callbacks.onError(errMsg);
+        reject(new Error(errMsg));
+      }, 10000);
+
       this.peer.on('open', (id) => {
+        clearTimeout(timer);
         this._peerId = id;
         this.setupHostListeners();
         this.startHeartbeat();
@@ -70,6 +100,7 @@ class PeerManager {
       });
 
       this.peer.on('error', (err) => {
+        clearTimeout(timer);
         const errMsg = err.type === 'unavailable-id'
           ? `ห้อง ${roomCode} ถูกใช้งานอยู่แล้ว ลองรหัสใหม่`
           : `PeerJS Error: ${err.message}`;
@@ -86,7 +117,7 @@ class PeerManager {
       return;
     }
     this._isConnecting = true;
-    this.destroy();
+    this.cleanupPeer();
     this._role = 'client';
     this._roomCode = roomCode;
 
@@ -285,25 +316,8 @@ class PeerManager {
 
   /** Clean up everything */
   destroy(): void {
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
-
-    for (const conn of this.connections.values()) {
-      try { conn.close(); } catch { /* ignore */ }
-    }
-    this.connections.clear();
-
-    if (this.peer) {
-      try { this.peer.destroy(); } catch { /* ignore */ }
-      this.peer = null;
-    }
-
+    this.cleanupPeer();
     this._role = 'solo';
-    this._roomCode = '';
-    this._peerId = '';
-    this._isConnecting = false;
     this.callbacks = {};
   }
 }
