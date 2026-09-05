@@ -169,6 +169,16 @@ export async function createYouTubePlayer(
     currentPlayer = null;
   }
 
+  // Ensure container element exists in DOM (recreate in wrapper if previous destroy stripped it)
+  let containerEl = document.getElementById(containerId);
+  if (!containerEl) {
+    const wrap = document.getElementById('game-yt-player-wrap');
+    if (wrap) {
+      wrap.innerHTML = `<div id="${containerId}" class="w-full h-full"></div>`;
+      containerEl = document.getElementById(containerId);
+    }
+  }
+
   return new Promise((resolve, reject) => {
     let settled = false;
     const timeout = setTimeout(() => {

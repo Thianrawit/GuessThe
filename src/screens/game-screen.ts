@@ -468,6 +468,30 @@ function startQuestionFlow(question: QuestionSession, flowId: number): void {
     `).join('');
   }
 
+  // Reset timer bar styling
+  const timerLabel = document.getElementById('timer-label');
+  const timerIcon = document.getElementById('timer-icon');
+  const timerSeconds = document.getElementById('timer-seconds');
+  const timerContainer = document.getElementById('timer-container');
+  const timerTextWrap = document.getElementById('timer-text-wrap');
+  const timerProgressBar = document.getElementById('timer-progress-bar');
+
+  if (timerLabel) timerLabel.textContent = 'เวลาตอบ';
+  if (timerIcon) timerIcon.textContent = '⏳';
+  if (timerSeconds) timerSeconds.textContent = String(gameController.config.guessDuration);
+  if (timerContainer) {
+    timerContainer.classList.remove('timer-urgent-pulse', 'opacity-40');
+  }
+  if (timerTextWrap) {
+    timerTextWrap.classList.remove('text-accent-red', 'text-accent-green');
+    timerTextWrap.classList.add('text-accent-cyan');
+  }
+  if (timerProgressBar) {
+    timerProgressBar.classList.remove('timer-urgent-bar');
+    timerProgressBar.style.width = '100%';
+    timerProgressBar.style.background = 'linear-gradient(90deg, #3b82f6, #8b5cf6, #06b6d4)';
+  }
+
   // Check if we need to sync media player for this question
   const media = document.getElementById('game-media') as HTMLVideoElement | null;
   const ytWrap = document.getElementById('game-yt-player-wrap');
@@ -483,8 +507,8 @@ function startQuestionFlow(question: QuestionSession, flowId: number): void {
       ytWrap.classList.remove('opacity-0');
       ytWrap.classList.add('opacity-100');
     }
-    // Only load if question changed from what is currently cued
-    if (currentLoadedVideoId !== question.youtubeId) {
+    // Only load if question changed from what is currently cued or player is missing
+    if (currentLoadedVideoId !== question.youtubeId || !ytPlayerInstance) {
       currentLoadedVideoId = question.youtubeId;
       createYouTubePlayer('game-yt-player', question.youtubeId, question.startTime)
         .then((p) => {
@@ -601,11 +625,6 @@ async function runSnippetAndAnswering(question: QuestionSession, flowId: number)
     }
   }
 
-  // Host triggers guessing state
-  if (peerManager.isHost) {
-    gameController.triggerGuessing();
-  }
-
   // Snippet timer: pause media & unlock buttons for Answering
   snippetTimeout = setTimeout(() => {
     if (activeFlowId !== flowId) return;
@@ -625,6 +644,11 @@ async function runSnippetAndAnswering(question: QuestionSession, flowId: number)
       btn.disabled = false;
       btn.classList.remove('opacity-60', 'cursor-not-allowed');
     });
+
+    // Host triggers guessing state for answer duration
+    if (peerManager.isHost) {
+      gameController.triggerGuessing();
+    }
 
     if (statusText) {
       statusText.innerHTML = '⏰ <span class="text-accent-cyan font-bold">เลือกคำตอบเร็ว!</span> (ตอบเร็วกว่า = คะแนนเยอะกว่า)';
@@ -737,13 +761,48 @@ function showReveal(question: QuestionSession): void {
   const media = document.getElementById('game-media') as HTMLVideoElement | null;
   const curtain = document.getElementById('media-curtain');
   const statusText = document.getElementById('status-text');
+  const countdownOverlay = document.getElementById('countdown-overlay');
 
+  // Hide curtain and countdown so video is 100% uncovered
+  if (curtain) curtain.classList.add('hidden');
+  if (countdownOverlay) countdownOverlay.classList.add('hidden');
+
+  // Update Status Banner
   if (statusText) {
-    statusText.innerHTML = `🎵 เฉลย: <span class="text-accent-cyan font-bold">${question.title}</span>`;
+    statusText.innerHTML = `🎬 <span class="text-accent-green font-bold">เฉลยคลิป:</span> <span class="text-text-primary font-bold">${question.title}</span>`;
   }
 
-  // Uncover video & play reveal audio
-  if (curtain) curtain.classList.add('hidden');
+  // Update Media Type Badge in Video Header
+  const typeBadge = document.getElementById('media-type-badge');
+  if (typeBadge) {
+    typeBadge.className = 'text-[10px] sm:text-xs text-accent-green bg-accent-green/20 border border-accent-green/30 px-2.5 py-0.5 rounded-full font-semibold';
+    typeBadge.textContent = '🎬 กำลังเล่นคลิปเฉลย';
+  }
+
+  // Reveal Timer Progress Bar Countdown
+  const timerLabel = document.getElementById('timer-label');
+  const timerIcon = document.getElementById('timer-icon');
+  const timerContainer = document.getElementById('timer-container');
+  const timerTextWrap = document.getElementById('timer-text-wrap');
+  const timerProgressBar = document.getElementById('timer-progress-bar');
+
+  if (timerLabel) timerLabel.textContent = 'กำลังเล่นคลิปเฉลย';
+  if (timerIcon) timerIcon.textContent = '🎬';
+  if (timerContainer) {
+    timerContainer.classList.remove('timer-urgent-pulse', 'opacity-40');
+  }
+  if (timerTextWrap) {
+    timerTextWrap.classList.remove('text-accent-red', 'text-accent-cyan');
+    timerTextWrap.classList.add('text-accent-green');
+  }
+  if (timerProgressBar) {
+    timerProgressBar.style.background = 'linear-gradient(90deg, #10b981, #06b6d4, #8b5cf6)';
+  }
+
+  if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
+  currentTimerCancel = startTimerBar(config.revealDuration);
+
+  // Uncover video & play reveal audio/video continuously
   const revealStart = (typeof question.revealStartTime === 'number' && question.revealStartTime >= 0)
     ? question.revealStartTime
     : question.startTime;
@@ -758,7 +817,8 @@ function showReveal(question: QuestionSession): void {
       media.currentTime = revealStart;
       media.play().catch(() => {});
     } catch {}
-  } else if (currentPlaybackMode === 'youtube') {
+  } else {
+    currentPlaybackMode = 'youtube';
     const ytWrap = document.getElementById('game-yt-player-wrap');
     if (ytWrap) {
       ytWrap.classList.remove('opacity-0');
@@ -767,6 +827,14 @@ function showReveal(question: QuestionSession): void {
     if (ytPlayerInstance) {
       if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
       activeSegmentCancel = ytPlayReveal(ytPlayerInstance, revealStart, config.revealDuration).cancel;
+    } else {
+      createYouTubePlayer('game-yt-player', question.youtubeId, revealStart)
+        .then((p) => {
+          ytPlayerInstance = p;
+          if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+          activeSegmentCancel = ytPlayReveal(p, revealStart, config.revealDuration).cancel;
+        })
+        .catch(() => {});
     }
   }
 
@@ -809,6 +877,7 @@ function showReveal(question: QuestionSession): void {
 
   // Reveal duration (5 seconds) -> Transition to INTERMEDIATE LEADERBOARD
   revealTimeout = setTimeout(() => {
+    if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
     if (currentPlaybackMode === 'html5' && media) {
       try { media.pause(); } catch {}
     } else if (currentPlaybackMode === 'youtube' && ytPlayerInstance) {
@@ -821,6 +890,7 @@ function showReveal(question: QuestionSession): void {
       if (nextIdx >= gameController.totalQuestions) {
         // Game completed -> Navigate to final results
         gameController.gameOver();
+        cleanupGameScreen();
         navigate('/results');
       } else {
         // Transition to Intermediate Leaderboard
@@ -946,7 +1016,6 @@ function showIntermediateLeaderboard(): void {
   intermediateTimeout = setTimeout(() => {
     if (isHost || peerManager.role === 'solo') {
       gameController.nextQuestion();
-      renderGameScreen();
     }
   }, 4500);
 }
@@ -1081,6 +1150,7 @@ function handleClientPacket(packet: NetworkPacket, _myPeerId: string): void {
         packet.wrongCounts,
         packet.finalLeaderboard
       );
+      cleanupGameScreen();
       navigate('/results');
       break;
     }
@@ -1193,9 +1263,14 @@ function cleanupTimers(): void {
   if (intermediateTimeout) { clearTimeout(intermediateTimeout); intermediateTimeout = null; }
   if (hardTimeoutTimer) { clearInterval(hardTimeoutTimer); hardTimeoutTimer = null; }
   if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+}
+
+export function cleanupGameScreen(): void {
+  cleanupTimers();
   if (ytPlayerInstance) {
     try { stopPlayer(ytPlayerInstance); } catch {}
     try { destroyPlayer(); } catch {}
     ytPlayerInstance = null;
   }
+  currentLoadedVideoId = null;
 }

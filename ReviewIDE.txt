@@ -1,44 +1,41 @@
 ================================================================
-Review IDE — การแก้ปัญหา StreamResolver & Invidious Fallback (Zero-Hang & Resilient Media)
+Review IDE — การกู้คืนหน้าเฉลยคลิป (Reveal Clip Phase) ก่อนสรุปผลคะแนนในแต่ละข้อ
 ================================================================
 
 1. ปัญหาเดิมที่พบ (Root Cause Analysis):
 ----------------------------------------
-- StreamResolver รันลูป Invidious instances แบบ Sequential (เรียงตัวทีละอัน) โดยมี timeout 3.5 วินาทีต่อ instance ทำให้เมื่อ Invidious public instances ส่วนใหญ่ติด CORS หรือถูกบล็อก ตัว resolver ต้องใช้เวลารอรวมถึง 10-14 วินาทีก่อนจะ error
-- อาการที่เกิดคือหน้า Loading (Initial Buffering) ค้างเกิน 10 วินาทีจน trigger hard timeout แล้วยังไม่พร้อม
-- เมื่อ Invidious ไม่สามารถดึง direct stream ได้ ตัว <video id="game-media"> ไม่มี src ทำให้เกิดข้อผิดพลาดในการเล่นสื่อ และไม่มีเสียง/วิดีโอขึ้นมาในเกม
-- ข้อผิดพลาด `TypeError: Cannot read properties of undefined (reading 'startTime')` เกิดจาก external script/extension (Performance Observer/Web Vitals) ที่พยายามอ่าน PerformanceEntry ใน browser
-- `Failed to execute 'postMessage' on 'DOMWindow'`: เกิดจาก YouTube IFrame API ในโหมด localhost ที่ไม่มีการระบุ `host: 'https://www.youtube.com'` และ `enablejsapi: 1` ทำให้ widget API สับสนเรื่อง origin
-- อาการ "เพลงไม่ขึ้น":
-  1) คอนเทนเนอร์ `#game-yt-player-wrap` ถูกเซ็ตสไตล์ `hidden` (`display: none`) ใน HTML และโค้ดเดิมไม่ได้ปลดคลาสออกเมื่อเป็นเพลงประเภท audio ส่งผลให้ Chromium หยุดการทำงานของ IFrame (IFrame execution & audio playback suspended)
-  2) ฟังก์ชัน `startQuestionFlow` ทำการทำลายและสร้าง IFrame ใหม่โดยไม่ได้ await ส่งผลให้ตอนที่ `playSegment` สั่งเล่น ตัวเล่นยังไม่พร้อม หรือถูกทำลายทิ้งไปก่อน
-  3) ใน `createYouTubePlayer` ไม่ได้ส่ง `start` เข้าไปใน `playerVars` ทำให้คลิปพยายามเริ่มเล่นที่ 0 วินาที ซึ่งมักจะติดโฆษณา Pre-roll Ad ของ YouTube
+- ในการทดสอบและเล่นเกมจริง ผู้เล่นพบว่าเมื่อตอบคำถามเสร็จ ระบบข้ามไปหน้าสรุปคะแนน (Intermediate Leaderboard) โดยไม่มีการเล่นเฉลยคลิปเพลง/MV ให้ผู้เล่นรับชม
+- สาเหตุหลัก 4 จุดในโค้ด:
+  1) ฟังก์ชัน `cleanupTimers()` มีการเรียก `destroyPlayer()` และเซ็ต `ytPlayerInstance = null` ซึ่งถูกเรียกทำงานทุกครั้งที่เข้าฟังก์ชัน `showReveal()` ส่งผลให้ YouTube Player และ iframe ใน DOM ถูกทำลายทิ้งทันทีก่อนที่ `ytPlayReveal()` จะได้เริ่มเล่น
+  2) เมื่อ `destroyPlayer()` ทำลาย IFrame ทิ้ง ตัว DOM Element `#game-yt-player` ถูกลบออกจาก DOM โดย YouTube API ทำให้การสร้าง Player ในข้อถัดๆ ไปเกิด Error "container #game-yt-player not found in DOM"
+  3) ใน `showIntermediateLeaderboard()` เมื่อหมดเวลา 4.5 วินาที มีการเรียก `renderGameScreen()` ซ้ำ ซึ่งเป็นการล้าง DOM ใหม่ทั้งหมด ทำให้ Player ที่กำลังเล่นและพรีบัฟเฟอร์อยู่หลุดการเชื่อมต่อ (Orphaned IFrame)
+  4) ตัวนับเวลา `triggerGuessing()` ใน Host ถูกเรียกตั้งแต่เริ่มเล่น Snippet ทำให้เวลาหมดเร็วกว่าเวลาตอบจริง
 
 2. สิ่งที่ดำเนินการแก้ไข (Implemented Solutions):
 -----------------------------------------------
-- ปรับปรุง `src/engine/stream-resolver.ts`:
-  * เปลี่ยนจากการ fetch แบบ sequential เป็น Concurrent Racing ด้วย `Promise.any` คิวรีทุก instance พร้อมกันแบบคู่ขนาน
-  * ลด timeout เหลือ 2000ms โดยหากไม่มี instance ใดตอบกลับ จะ reject ทันทีภายใน 2 วินาที ไม่มีการค้าง 14 วินาทีอีกต่อไป
-  * เพิ่มตัวแปร `instancesCORSBlocked` จดจำสถานะใน session ทันทีที่ public instances ติด CORS ครั้งแรก ข้อถัดๆ ไปจะไม่ส่ง network request ไปให้ console ขึ้นสีแดงซ้ำซาก และสลับไป YouTube fallback ได้ทันทีใน 0ms
-- ปรับปรุง `src/engine/youtube-player.ts`:
-  * เพิ่ม `host: 'https://www.youtube.com'`, `enablejsapi: 1`, `start: startTime`, และ `widget_referrer: window.location.href` ใน `createYouTubePlayer` และ `createPreviewPlayer`
-  * ปรับให้ `createYouTubePlayer` รองรับการนำ IFrame เดิมกลับมาใช้ซ้ำ (Player Reuse) ผ่านคำสั่ง `loadVideoById` โดยไม่ต้องทำลายและสร้าง IFrame ใหม่ทุกข้อ
-  * ปรับปรุง `prebufferAt` ให้ `unMute()` และตั้งระดับเสียง 100% หลังพรีบัฟเฟอร์เสร็จ เพื่อให้พร้อมเล่นทันทีเมื่อเข้าสู่ Snippet Phase
-  * ปรับปรุง `playSegment` และ `playReveal` ให้ `unMute()`, `setVolume(100)`, และ `seekTo(startTime)` อย่างแม่นยำ
-- ปรับปรุง `src/screens/game-screen.ts`:
-  * เปลี่ยนคอนเทนเนอร์ `#game-yt-player-wrap` จากการใช้ `hidden` (`display: none`) มาใช้ `opacity-0` / `opacity-100` แทน เพื่อให้ IFrame มีขนาดและทำงานใน DOM ตลอดเวลา ไม่ถูก Browser Freeze เสียง
-  * โหมดทายเพลง (Audio): ใช้ `media-curtain` (`z-20 bg-[#0a0a14]`) ปิดทับภาพวิดีโอไว้ แสดง Audio Visualizer ขณะที่เสียงเพลงเล่นผ่าน YouTube Player เต็ม 100%
-  * โหมดทาย MV (Video): ซ่อน `media-curtain` เพื่อเปิดให้เห็นคลิปภาพวิดีโอ
-  * แก้ไข `startQuestionFlow` ให้ตรวจสอบ `currentLoadedVideoId` ก่อน หากเป็นคลิปเดียวกับที่พรีบัฟเฟอร์ไว้ในขั้นตอน Initial Buffering จะไม่สั่งโหลดซ้ำ ทำให้เพลงเริ่มเล่นได้ทันทีเมื่อนับถอยหลังจบ
-  * เพิ่ม Background Prebuffering ของข้อถัดไปในหน้า Intermediate Leaderboard แบบไร้รอยต่อ
+- แก้ไข `src/screens/game-screen.ts`:
+  * ปรับ `cleanupTimers()` ให้ยกเลิกเฉพาะ Timer, Timeout, และ Animation Frame เท่านั้น ไม่ทำลาย `ytPlayerInstance` ระหว่างการเล่นเกม
+  * แยก `cleanupGameScreen()` ออกมาต่างหาก สำหรับเรียกเมื่อผู้เล่นออกจากหน้าเกมเท่านั้น (เช่น จบเกมไปยังหน้า `/results` หรือกลับหน้าหลัก)
+  * ปรับปรุงฟังก์ชัน `showReveal(question)` อย่างสมบูรณ์:
+    - ปลดม่านดำ (`media-curtain.classList.add('hidden')`) และซ่อน Countdown Overlay เพื่อเปิดให้เห็นหน้าจอคลิปวิดีโอ 100%
+    - เปลี่ยนข้อความสถานะด้านล่างเป็น `🎬 เฉลยคลิป: [ชื่อเพลง - ศิลปิน]`
+    - อัปเดต Badge บนวิดีโอเป็น `🎬 กำลังเล่นคลิปเฉลย` (สีเขียวนีออน)
+    - เปลี่ยนแถบเวลาเป็น Reveal Progress Countdown Bar: แสดงไอคอน 🎬, ข้อความ "กำลังเล่นคลิปเฉลย", เวลานับถอยหลังตามที่ตั้งไว้ (5 วินาที), พร้อมเส้นสีเขียวนีออน-ฟ้า-ม่วงที่ค่อยๆ ลดลง
+    - ปลด Mute และเล่นเสียง/วิดีโอตั้งแต่ `revealStartTime` (หรือ `startTime`) อย่างต่อเนื่องตลอดระยะเวลา `config.revealDuration`
+    - ไฮไลต์ช้อยส์คำตอบที่ถูกต้องด้วยสีเขียวเรืองแสง (`correct`) และคำตอบที่ตอบผิดด้วยสีแดง (`wrong`) พร้อมป้ายชื่อผู้เล่น
+    - เมื่อเล่นคลิปเฉลยจบครบ 5 วินาที จึงหยุดเล่นสื่อ แล้วเปลี่ยนผ่านเข้าสู่หน้ากระดานสรุปคะแนนคั่นระหว่างข้อ (`triggerIntermediateLeaderboard()`)
+  * ปรับ `showIntermediateLeaderboard()` ให้นำทางสู่ข้อถัดไปผ่าน `gameController.nextQuestion()` แบบ In-place โดยไม่เรียก `renderGameScreen()` เพื่อรักษา Persistent Player และ IFrame ไว้ใน DOM ตลอดเกม
+  * เลื่อนการเรียก `gameController.triggerGuessing()` ไปทำงานเมื่อสิ้นสุดท่อน Snippet (จังหวะที่ปุ่มช้อยส์ปลดล็อกให้ตอบ) เพื่อให้เวลานับถอยหลังในการตอบตรงกับค่าที่ตั้งไว้จริง
+- แก้ไข `src/engine/youtube-player.ts`:
+  * เพิ่มระบบ Auto-Resurrection ให้กับคอนเทนเนอร์ `#game-yt-player` หากเคยถูกลบออกจาก DOM จะสร้าง `div` กลับคืนมาให้อัตโนมัติก่อนสั่งสร้าง Player ใหม่
 
 3. ผลการตรวจสอบ (Verification & Test Results):
 ----------------------------------------------
 - `npx.cmd tsc --noEmit`: ผ่าน 100% (0 errors)
-- `npm.cmd run build`: ผ่าน 100% (Production bundle สร้างเสร็จสมบูรณ์)
-- ทดสอบการเล่นเกมจริงผ่าน Browser Automation:
-  * เริ่มเกมจาก Solo Lobby -> Initial Buffering โหลดเสร็จใน ~1 วินาที
-  * ข้อ 1: เพลงเล่นทันที (Audio Visualizer ขยับ, เสียงเพลงเล่น, ตัวนับเวลาทำงาน)
-  * หมดเวลาพรีวิว 3 วินาที: ตัวเลือก A, B, C, D ปลดล็อกให้ตอบ
-  * ผู้เล่นคลิกเลือกคำตอบ -> เข้าสู่ Reveal Phase เพลง/คลิปเล่นท่อนเฉลยต่อเนื่อง
-  * เข้าสู่ข้อ 2 และ 3: ระบบทำงานต่อเนื่อง ราบรื่น ไม่ค้าง และมีเสียงเล่นทุกข้อ
+- `npm.cmd run build`: ผ่าน 100% (Production bundle สร้างสำเร็จใน 747ms)
+- ตรวจสอบผ่าน Browser Real Gameplay Screenshot (`reveal_clip_screen_1788615726088.png`):
+  * เมื่อผู้เล่นตอบคำถาม หน้าจอเข้าสู่ช่วง "🎬 เฉลยคลิป" ทันที
+  * คลิป MV "ยินดีที่ไม่รู้จัก - 25hours" ปรากฏบนจอชัดเจน พร้อมเปิดเสียงเพลงท่อนเฉลย
+  * แถบเวลาแสดง "🎬 กำลังเล่นคลิปเฉลย 5s"
+  * ช้อยส์ข้อ B ถูกไฮไลต์สีเขียวนีออน และข้อความด้านล่างแสดง `🎬 เฉลยคลิป: ยินดีที่ไม่รู้จัก - 25hours`
+  * เมื่อเล่นคลิปเฉลยครบ 5 วินาที ระบบเปลี่ยนผ่านเข้าสู่หน้ากระดานสรุปคะแนน (Intermediate Leaderboard) แล้วเริ่มข้อถัดไปอย่างราบรื่น
