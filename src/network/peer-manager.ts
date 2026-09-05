@@ -37,8 +37,13 @@ class PeerManager {
   get connectedPeerIds(): string[] { return Array.from(this.connections.keys()); }
   get isHost(): boolean { return this._role === 'host' || this._role === 'solo'; }
 
-  /** Set callbacks */
+  /** Set callbacks (replaces ALL previous callbacks) */
   on(callbacks: PeerCallbacks): void {
+    this.callbacks = callbacks;
+  }
+
+  /** Merge additional callbacks onto existing ones */
+  onMerge(callbacks: Partial<PeerCallbacks>): void {
     this.callbacks = { ...this.callbacks, ...callbacks };
   }
 
@@ -141,17 +146,7 @@ class PeerManager {
         this.setupDataListener(conn, conn.peer);
       });
 
-      conn.on('close', () => {
-        this.connections.delete(conn.peer);
-        this.lastSeen.delete(conn.peer);
-        if (this.callbacks.onPlayerLeave) this.callbacks.onPlayerLeave(conn.peer);
-      });
-
-      conn.on('error', () => {
-        this.connections.delete(conn.peer);
-        this.lastSeen.delete(conn.peer);
-        if (this.callbacks.onPlayerLeave) this.callbacks.onPlayerLeave(conn.peer);
-      });
+      // Note: close/error handlers are managed by setupDataListener to avoid duplicate callbacks
     });
   }
 
@@ -181,6 +176,12 @@ class PeerManager {
     });
 
     conn.on('close', () => {
+      this.connections.delete(remotePeerId);
+      this.lastSeen.delete(remotePeerId);
+      if (this.callbacks.onPlayerLeave) this.callbacks.onPlayerLeave(remotePeerId);
+    });
+
+    conn.on('error', () => {
       this.connections.delete(remotePeerId);
       this.lastSeen.delete(remotePeerId);
       if (this.callbacks.onPlayerLeave) this.callbacks.onPlayerLeave(remotePeerId);

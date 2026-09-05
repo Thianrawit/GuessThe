@@ -263,12 +263,17 @@ export function renderGameScreen(): void {
     `;
 
     // Setup network listeners for multiplayer synchronization
+    // Use on() (full replace) to prevent stale lobby callbacks from firing during gameplay
     if (isHost && peerManager.role === 'host') {
       peerManager.on({
         onReceive: (peerId, packet) => {
           if (packet.type === 'PLAYER_SUBMIT') {
             gameController.receiveAnswer(packet.peerId || peerId, packet.choiceIndex);
           }
+        },
+        onPlayerJoin: () => {
+          // Reject mid-game joins — game already started
+          console.warn('[GameScreen] Player tried to join mid-game, ignoring');
         },
         onPlayerLeave: (peerId) => {
           const departing = gameController.players.find((p) => p.peerId === peerId);
