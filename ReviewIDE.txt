@@ -1,28 +1,21 @@
 ═══════════════════════════════════════════════════
-  ReviewIDE — GuessThe? Reveal Phase Button Colors
+  ReviewIDE — GitHub Pages Deployment Setup
   Date: 2026-09-05
 ═══════════════════════════════════════════════════
 
-[DONE] fix(reveal): ปรับ Logic สีปุ่มช้อยส์ในหน้าเฉลย (Reveal Phase)
+[DONE] ci: เพิ่มระบบ Build & Deploy อัตโนมัติไปยัง GitHub Pages ผ่าน GitHub Actions
 
-ไฟล์ที่แก้:
-  - src/screens/game-screen.ts (showReveal function, line ~848)
+ไฟล์ที่เพิ่ม/แก้ไข:
+  - .github/workflows/deploy.yml (เพิ่ม workflow CI/CD)
 
-สิ่งที่เปลี่ยน:
-  1. ข้อที่ถูกต้อง (correctIndex) → สีเขียวเสมอสำหรับทุกคน ✅
-  2. ถ้าผู้เล่นเครื่องนี้ "ตอบถูก" (myChoice === correctIndex):
-     - ไม่มีสีแดงปรากฏเลย
-     - ปุ่มอื่นๆ ถูก dim (opacity 0.35) เพื่อเน้นข้อที่ถูก
-  3. ถ้าผู้เล่นเครื่องนี้ "ตอบผิด":
-     - สีแดงเฉพาะข้อที่ผู้เล่นเลือก (myChoice)
-     - ปุ่มอื่นๆ ที่ไม่ใช่ correct/myChoice ถูก dim (opacity 0.35)
+การทำงาน:
+  1. เมื่อมีการ push โค้ดเข้า branch main บน GitHub:
+     - GitHub Actions จะรัน build อัตโนมัติ (npm ci -> npm run build)
+     - นำโฟลเดอร์ dist ไป publish ขึ้น GitHub Pages ทันที
+  2. การตั้งค่าบน GitHub Repo:
+     - เข้า Settings -> Pages
+     - ในส่วน "Build and deployment" -> Source: ให้เลือกเป็น "GitHub Actions"
+     - เว็บจะออนไลน์ที่: https://thianrawit.github.io/GuessThe/
 
-Logic เก่า: 
-  - ทุกปุ่มที่มีคนตอบ (pickedByAnyone) จะแดงหมด → confusing
-
-Logic ใหม่:
-  - แดงเฉพาะ MY wrong choice → ชัดเจนว่าตัวเองตอบผิดข้อไหน
-  - Badge ยังแสดงชื่อทุกคนที่เลือกข้อนั้นตามเดิม
-
-Commit: 74068a9
+Commit: 7716afc
 ═══════════════════════════════════════════════════
