@@ -1,6 +1,7 @@
 /* ──────────────────────────────────────────────
    Game Screen — Main Gameplay Engine
-   - 100% Ad-Free HTML5 Media (<video id="game-media">)
+   - 100% Native YouTube IFrame API
+   - Silent Pre-roll Burner (Burns ads behind dark overlay)
    - Initial Buffering with 10s Hard Timeout & Force Start
    - Intermediate Leaderboard with FLIP Animation & Double-Buffering
    ────────────────────────────────────────────── */
@@ -9,11 +10,11 @@ import { setScreen } from '../utils/dom';
 import { navigate } from '../utils/router';
 import { gameController } from '../game/game-controller';
 import { peerManager } from '../network/peer-manager';
-import { resolveStreamUrl } from '../engine/stream-resolver';
 import { countdown } from '../engine/timer';
 import {
   createYouTubePlayer,
-  prebufferAt,
+  burnPreRoll,
+  cancelBurnPreRoll,
   playSegment,
   playReveal as ytPlayReveal,
   stopPlayer,
@@ -34,7 +35,6 @@ let isForceStarted = false;
 let isPreparingNext = false;
 let hasAnsweredCurrent = false;
 
-let currentPlaybackMode: 'html5' | 'youtube' = 'html5';
 let ytPlayerInstance: YT.Player | null = null;
 let currentLoadedVideoId: string | null = null;
 let activeSegmentCancel: (() => void) | null = null;
@@ -101,18 +101,8 @@ export function renderGameScreen(): void {
             </span>
           </div>
 
-          <!-- HTML5 Video / Audio Media Element (Persistent: Never destroyed) -->
-          <video
-            id="game-media"
-            playsinline
-            webkit-playsinline
-            muted
-            preload="auto"
-            class="w-full h-full object-contain bg-black transition-opacity duration-300 pointer-events-none"
-          ></video>
-
-          <!-- YouTube Player Fallback Container (Persistent, Never display:none) -->
-          <div id="game-yt-player-wrap" class="absolute inset-0 w-full h-full bg-black pointer-events-none transition-opacity duration-300 opacity-0 z-10">
+          <!-- YouTube IFrame Player Container (Persistent 100% Native YouTube API) -->
+          <div id="game-yt-player-wrap" class="absolute inset-0 w-full h-full bg-black pointer-events-none transition-opacity duration-300 opacity-100 z-10">
             <div id="game-yt-player" class="w-full h-full"></div>
           </div>
 
@@ -292,51 +282,23 @@ async function startInitialBuffering(flowId: number, isHost: boolean, myPeerId: 
   const question = gameController.currentQuestion;
   if (!question) return;
 
-  const media = document.getElementById('game-media') as HTMLVideoElement | null;
   const hardTimeoutText = document.getElementById('hard-timeout-text');
   const forceStartBtn = document.getElementById('btn-force-start') as HTMLButtonElement | null;
 
   isForceStarted = false;
   let hasSignaledReady = false;
 
-  // 1. Client & Host: Pre-buffer Question 0
+  // 1. Client & Host: Initialize YouTube Player & Burn Pre-roll Ad silently behind curtain
   const bufferTask = async () => {
     try {
-      const streamUrl = await resolveStreamUrl(question.youtubeId, question.type, 2000);
+      currentLoadedVideoId = question.youtubeId;
+      ytPlayerInstance = await createYouTubePlayer('game-yt-player', question.youtubeId, question.startTime);
       if (activeFlowId !== flowId) return;
 
-      if (media) {
-        currentPlaybackMode = 'html5';
-        media.src = streamUrl;
-        media.muted = true;
-        media.currentTime = Math.max(0, question.startTime);
-        media.load();
-
-        // Brief play/pause to pull buffer into device memory
-        try {
-          const p = media.play();
-          if (p !== undefined) {
-            p.then(() => {
-              setTimeout(() => { try { media.pause(); } catch {} }, 150);
-            }).catch(() => {});
-          }
-        } catch {}
-      }
+      // Silent Pre-roll Burner: burns YouTube ads silently behind the dark overlay
+      await burnPreRoll(ytPlayerInstance, question.youtubeId, question.startTime, 8500);
     } catch (err) {
-      console.warn('[InitialBuffering] Invidious direct stream unavailable, switching to YouTube Player fallback:', err);
-      currentPlaybackMode = 'youtube';
-      const ytWrap = document.getElementById('game-yt-player-wrap');
-      if (ytWrap) {
-        ytWrap.classList.remove('opacity-0');
-        ytWrap.classList.add('opacity-100');
-      }
-      currentLoadedVideoId = question.youtubeId;
-      try {
-        ytPlayerInstance = await createYouTubePlayer('game-yt-player', question.youtubeId, question.startTime);
-        await prebufferAt(ytPlayerInstance, question.startTime);
-      } catch (ytErr) {
-        console.warn('[InitialBuffering] YouTube player fallback warning:', ytErr);
-      }
+      console.warn('[InitialBuffering] YouTube player pre-roll burner error:', err);
     } finally {
       if (!hasSignaledReady && activeFlowId === flowId) {
         hasSignaledReady = true;
@@ -495,40 +457,31 @@ function startQuestionFlow(question: QuestionSession, flowId: number): void {
     timerProgressBar.style.background = 'linear-gradient(90deg, #3b82f6, #8b5cf6, #06b6d4)';
   }
 
-  // Check if we need to sync media player for this question
-  const media = document.getElementById('game-media') as HTMLVideoElement | null;
-  const ytWrap = document.getElementById('game-yt-player-wrap');
+  // Cancel any lingering pre-roll burn polling
+  cancelBurnPreRoll();
 
-  if (currentPlaybackMode === 'html5' && media && media.src) {
-    if (ytWrap) {
-      ytWrap.classList.remove('opacity-100');
-      ytWrap.classList.add('opacity-0');
-    }
-  } else {
-    currentPlaybackMode = 'youtube';
-    if (ytWrap) {
-      ytWrap.classList.remove('opacity-0');
-      ytWrap.classList.add('opacity-100');
-    }
-    // Only load if question changed from what is currently cued or player is missing
-    if (currentLoadedVideoId !== question.youtubeId || !ytPlayerInstance) {
-      currentLoadedVideoId = question.youtubeId;
-      createYouTubePlayer('game-yt-player', question.youtubeId, question.startTime)
-        .then((p) => {
-          ytPlayerInstance = p;
-          prebufferAt(p, question.startTime);
-        })
-        .catch(() => {});
-    } else {
-      try {
-        ytPlayerInstance?.seekTo(question.startTime, true);
-      } catch {}
-    }
-  }
-
-  // Ensure media curtain is active during countdown so no video frame leaks
+  // Ensure media curtain is active during countdown so no video frame leaks (100% solid pitch black)
   const curtain = document.getElementById('media-curtain');
   if (curtain) curtain.classList.remove('hidden');
+
+  // Ensure YouTube player is positioned at startTime and paused
+  if (ytPlayerInstance) {
+    try {
+      ytPlayerInstance.pauseVideo();
+      ytPlayerInstance.seekTo(question.startTime, true);
+    } catch {}
+  } else {
+    currentLoadedVideoId = question.youtubeId;
+    createYouTubePlayer('game-yt-player', question.youtubeId, question.startTime)
+      .then((p) => {
+        ytPlayerInstance = p;
+        try {
+          p.pauseVideo();
+          p.seekTo(question.startTime, true);
+        } catch {}
+      })
+      .catch(() => {});
+  }
 
   // Execute countdown 3..2..1
   runCountdown(flowId, () => {
@@ -570,8 +523,7 @@ function runCountdown(flowId: number, onComplete: () => void): void {
 /**
  * Play Snippet then unlock Answering Buttons
  */
-async function runSnippetAndAnswering(question: QuestionSession, flowId: number): Promise<void> {
-  const media = document.getElementById('game-media') as HTMLVideoElement | null;
+function runSnippetAndAnswering(question: QuestionSession, flowId: number): void {
   const curtain = document.getElementById('media-curtain');
   const statusText = document.getElementById('status-text');
   const snippetDuration = gameController.config.snippetDuration || 3;
@@ -592,58 +544,28 @@ async function runSnippetAndAnswering(question: QuestionSession, flowId: number)
       : `🎧 กำลังเปิดเสียงเพลง... <span class="text-accent-cyan font-bold">${snippetDuration}s</span> (รอเพลงจบเพื่อตอบ)`;
   }
 
-  // Setup media presentation
-  if (currentPlaybackMode === 'html5' && media && media.src) {
-    if (question.type === 'video') {
-      if (curtain) curtain.classList.add('hidden');
-      media.classList.remove('opacity-0');
-      media.classList.add('opacity-100');
-    } else {
-      if (curtain) curtain.classList.remove('hidden');
-      media.classList.add('opacity-0');
-    }
+  // Setup media presentation & start unmuted playback
+  if (question.type === 'video') {
+    if (curtain) curtain.classList.add('hidden'); // Uncover video for MV mode
+  } else {
+    if (curtain) curtain.classList.remove('hidden'); // Keep curtain with visualizer for Music mode
+  }
 
-    media.muted = false;
-    media.volume = 1.0;
-    try {
-      media.currentTime = Math.max(0, question.startTime);
-      await media.play();
-    } catch (e) {
-      console.warn('[GameScreen] Media play blocked, showing banner:', e);
-      const slowBanner = document.getElementById('slow-network-banner');
-      if (slowBanner) slowBanner.classList.remove('hidden');
-    }
-  } else if (currentPlaybackMode === 'youtube') {
-    const ytWrap = document.getElementById('game-yt-player-wrap');
-    if (ytWrap) {
-      ytWrap.classList.remove('opacity-0');
-      ytWrap.classList.add('opacity-100');
-    }
-
-    if (question.type === 'video') {
-      if (curtain) curtain.classList.add('hidden');
-    } else {
-      if (curtain) curtain.classList.remove('hidden');
-    }
-
-    if (ytPlayerInstance) {
-      if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-      activeSegmentCancel = playSegment(ytPlayerInstance, question.startTime, snippetDuration, () => {}).cancel;
-    }
+  if (ytPlayerInstance) {
+    if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+    activeSegmentCancel = playSegment(ytPlayerInstance, question.startTime, snippetDuration, () => {}).cancel;
   }
 
   // Snippet timer: pause media & unlock buttons for Answering
   snippetTimeout = setTimeout(() => {
     if (activeFlowId !== flowId) return;
 
-    if (currentPlaybackMode === 'html5' && media) {
-      try { media.pause(); } catch {}
-    } else if (currentPlaybackMode === 'youtube' && ytPlayerInstance) {
-      if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+    if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+    if (ytPlayerInstance) {
       try { ytPlayerInstance.pauseVideo(); } catch {}
     }
 
-    // Cover video to prevent visual spoiler while answering
+    // Cover video immediately with curtain to prevent visual spoiler while answering
     if (curtain) curtain.classList.remove('hidden');
 
     // Unlock answer choices
@@ -765,12 +687,11 @@ function showReveal(question: QuestionSession): void {
   const config = gameController.config;
   const answers = gameController.answers;
   const players = gameController.players;
-  const media = document.getElementById('game-media') as HTMLVideoElement | null;
   const curtain = document.getElementById('media-curtain');
   const statusText = document.getElementById('status-text');
   const countdownOverlay = document.getElementById('countdown-overlay');
 
-  // Hide curtain and countdown so video is 100% uncovered
+  // Hide curtain and countdown so reveal video/audio is uncovered
   if (curtain) curtain.classList.add('hidden');
   if (countdownOverlay) countdownOverlay.classList.add('hidden');
 
@@ -814,35 +735,17 @@ function showReveal(question: QuestionSession): void {
     ? question.revealStartTime
     : question.startTime;
 
-  if (currentPlaybackMode === 'html5' && media && media.src) {
-    media.classList.remove('opacity-0');
-    media.classList.add('opacity-100');
-    media.muted = false;
-    media.volume = 1.0;
-
-    try {
-      media.currentTime = revealStart;
-      media.play().catch(() => {});
-    } catch {}
+  if (ytPlayerInstance) {
+    if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+    activeSegmentCancel = ytPlayReveal(ytPlayerInstance, revealStart, config.revealDuration).cancel;
   } else {
-    currentPlaybackMode = 'youtube';
-    const ytWrap = document.getElementById('game-yt-player-wrap');
-    if (ytWrap) {
-      ytWrap.classList.remove('opacity-0');
-      ytWrap.classList.add('opacity-100');
-    }
-    if (ytPlayerInstance) {
-      if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-      activeSegmentCancel = ytPlayReveal(ytPlayerInstance, revealStart, config.revealDuration).cancel;
-    } else {
-      createYouTubePlayer('game-yt-player', question.youtubeId, revealStart)
-        .then((p) => {
-          ytPlayerInstance = p;
-          if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-          activeSegmentCancel = ytPlayReveal(p, revealStart, config.revealDuration).cancel;
-        })
-        .catch(() => {});
-    }
+    createYouTubePlayer('game-yt-player', question.youtubeId, revealStart)
+      .then((p) => {
+        ytPlayerInstance = p;
+        if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+        activeSegmentCancel = ytPlayReveal(p, revealStart, config.revealDuration).cancel;
+      })
+      .catch(() => {});
   }
 
   // Highlight correct / wrong answers
@@ -899,12 +802,15 @@ function showReveal(question: QuestionSession): void {
   // Reveal duration (5 seconds) -> Transition to INTERMEDIATE LEADERBOARD
   revealTimeout = setTimeout(() => {
     if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
-    if (currentPlaybackMode === 'html5' && media) {
-      try { media.pause(); } catch {}
-    } else if (currentPlaybackMode === 'youtube' && ytPlayerInstance) {
-      if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-      try { ytPlayerInstance.pauseVideo(); } catch {}
+    if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+    if (ytPlayerInstance) {
+      try {
+        ytPlayerInstance.pauseVideo();
+        ytPlayerInstance.mute();
+      } catch {}
     }
+
+    if (curtain) curtain.classList.remove('hidden');
 
     if (peerManager.isHost || peerManager.role === 'solo') {
       const nextIdx = gameController.currentIndex + 1;
@@ -981,7 +887,11 @@ function showIntermediateLeaderboard(): void {
     });
   }
 
-  // 2. DOUBLE-BUFFERING PIPELINE: Pre-buffer Question N+1 in background
+  // Ensure media curtain covers player behind leaderboard
+  const curtain = document.getElementById('media-curtain');
+  if (curtain) curtain.classList.remove('hidden');
+
+  // 2. DOUBLE-BUFFERING PIPELINE: Silent Pre-roll Burner for Question N+1 behind Leaderboard Overlay
   const nextIdx = currentIdx + 1;
   const nextQuestion = gameController.questions[nextIdx];
 
@@ -989,28 +899,15 @@ function showIntermediateLeaderboard(): void {
     isPreparingNext = true;
     (async () => {
       try {
-        const streamUrl = await resolveStreamUrl(nextQuestion.youtubeId, nextQuestion.type, 2000);
-        const media = document.getElementById('game-media') as HTMLVideoElement | null;
-        if (media) {
-          currentPlaybackMode = 'html5';
-          media.src = streamUrl;
-          media.muted = true;
-          media.currentTime = Math.max(0, nextQuestion.startTime);
-          media.load();
+        if (!ytPlayerInstance) {
+          ytPlayerInstance = await createYouTubePlayer('game-yt-player', nextQuestion.youtubeId, nextQuestion.startTime);
         }
+        currentLoadedVideoId = nextQuestion.youtubeId;
+
+        // Silent Pre-roll Burner: burn any ad for next question during 4.5s leaderboard
+        await burnPreRoll(ytPlayerInstance, nextQuestion.youtubeId, nextQuestion.startTime, 4000);
       } catch (err) {
-        console.warn('[DoubleBuffering] Direct stream prebuffer failed, using YouTube fallback:', err);
-        currentPlaybackMode = 'youtube';
-        if (ytPlayerInstance && typeof (ytPlayerInstance as any).loadVideoById === 'function') {
-          currentLoadedVideoId = nextQuestion.youtubeId;
-          try {
-            (ytPlayerInstance as any).loadVideoById({
-              videoId: nextQuestion.youtubeId,
-              startSeconds: Math.max(0, nextQuestion.startTime),
-            });
-            prebufferAt(ytPlayerInstance, nextQuestion.startTime);
-          } catch {}
-        }
+        console.warn('[DoubleBuffering] YouTube pre-roll burner error:', err);
       } finally {
         isPreparingNext = false;
         // Signal ready for next question
@@ -1277,6 +1174,7 @@ function renderIntermediateCards(players: PlayerInfo[], deltas: Record<string, n
 }
 
 function cleanupTimers(): void {
+  cancelBurnPreRoll();
   if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
   if (currentCountdownCancel) { currentCountdownCancel(); currentCountdownCancel = null; }
   if (snippetTimeout) { clearTimeout(snippetTimeout); snippetTimeout = null; }

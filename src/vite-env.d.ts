@@ -40,8 +40,8 @@ declare namespace YT {
     getPlayerState(): number;
     getCurrentTime(): number;
     getDuration(): number;
-    loadVideoById(videoId: string, startSeconds?: number): void;
-    cueVideoById(videoId: string, startSeconds?: number): void;
+    loadVideoById(options: string | { videoId: string; startSeconds?: number; endSeconds?: number }, startSeconds?: number): void;
+    cueVideoById(options: string | { videoId: string; startSeconds?: number; endSeconds?: number }, startSeconds?: number): void;
     destroy(): void;
     getIframe(): HTMLIFrameElement;
   }

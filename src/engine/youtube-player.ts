@@ -281,6 +281,149 @@ export async function createPreviewPlayer(
   });
 }
 
+export interface BurnPreRollResult {
+  success: boolean;
+  adDetected: boolean;
+  timeTakenMs: number;
+}
+
+let activeBurnCancel: (() => void) | null = null;
+
+export function cancelBurnPreRoll(): void {
+  if (activeBurnCancel) {
+    activeBurnCancel();
+    activeBurnCancel = null;
+  }
+}
+
+/**
+ * Silent Pre-roll Burner:
+ * Runs behind solid black screen/curtain during INITIAL_BUFFERING or INTERMEDIATE_LEADERBOARD.
+ * Mutes the player, loads the video, commands immediate playback to burn YouTube ads silently.
+ * Continuously polls ad status; once any pre-roll completes and player arrives at startTime,
+ * immediately pauses playback and signals readiness.
+ */
+export function burnPreRoll(
+  player: YT.Player,
+  rawVideoId: string,
+  startTime: number = 0,
+  maxWaitMs: number = 8500
+): Promise<BurnPreRollResult> & { cancel: () => void } {
+  cancelBurnPreRoll();
+
+  const videoId = extractYouTubeId(rawVideoId);
+  const startTimestamp = Date.now();
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  let cancelled = false;
+  let adDetected = false;
+
+  const cancel = () => {
+    cancelled = true;
+    if (timer) { clearInterval(timer); timer = null; }
+    if (timeout) { clearTimeout(timeout); timeout = null; }
+    if (activeBurnCancel === cancel) { activeBurnCancel = null; }
+  };
+
+  activeBurnCancel = cancel;
+
+  const promise = new Promise<BurnPreRollResult>((resolve) => {
+    if (!player || typeof (player as any).loadVideoById !== 'function') {
+      resolve({ success: false, adDetected: false, timeTakenMs: 0 });
+      return;
+    }
+
+    const startSec = Math.max(0, Math.floor(startTime));
+
+    try {
+      // 1. Mute completely to burn ads silently behind curtains
+      player.mute();
+
+      // 2. Load video at target startTime
+      player.loadVideoById({
+        videoId,
+        startSeconds: startSec,
+      });
+
+      // 3. Command playVideo immediately
+      player.playVideo();
+    } catch (err) {
+      console.warn('[YouTubePlayer] burnPreRoll initiation error:', err);
+    }
+
+    const checkReady = () => {
+      if (cancelled) return;
+
+      try {
+        const state = typeof player.getPlayerState === 'function' ? player.getPlayerState() : -1;
+
+        // Ad detection checks
+        const isAdActive = (
+          (typeof (player as any).getAdState === 'function' && (player as any).getAdState() === 1) ||
+          (typeof (player as any).isAdPlaying === 'function' && (player as any).isAdPlaying() === true)
+        );
+
+        const videoData = typeof (player as any).getVideoData === 'function' ? (player as any).getVideoData() : null;
+        const isDifferentVideo = videoData && videoData.video_id && videoData.video_id !== videoId;
+        const isAdTitle = videoData && videoData.title && /advertisement|sponsor|promo/i.test(videoData.title);
+
+        if (isAdActive || isDifferentVideo || isAdTitle) {
+          adDetected = true;
+          // Ad is currently playing, let it burn silently behind curtain
+          return;
+        }
+
+        // When ad finishes (or no ad was present):
+        // Main video must be playing (1) or buffering (3) or paused (2) at the target startTime
+        if (state === 1 || state === 2 || state === 3) {
+          const curTime = typeof player.getCurrentTime === 'function' ? player.getCurrentTime() : 0;
+
+          // Target reached:
+          // If startTime > 1s: curTime has jumped near or past startTime
+          // If startTime <= 1s: state is PLAYING (1) with curTime >= 0
+          const reachedTarget = startTime > 1
+            ? (curTime >= Math.max(0, startTime - 0.75))
+            : (state === 1 && curTime >= 0);
+
+          if (reachedTarget) {
+            // Target video arrived at startTime! Pause immediately & keep ready
+            try {
+              player.pauseVideo();
+              player.seekTo(startTime, true);
+            } catch {}
+
+            const durationMs = Date.now() - startTimestamp;
+            cancel();
+            resolve({ success: true, adDetected, timeTakenMs: durationMs });
+          }
+        }
+      } catch {
+        // Suppress transient postMessage/iframe timing exceptions
+      }
+    };
+
+    // Poll every 100ms for fast ad-burn detection
+    timer = setInterval(checkReady, 100);
+
+    // Hard safety timeout: pause and resolve so game never hangs
+    timeout = setTimeout(() => {
+      if (!cancelled) {
+        try {
+          player.pauseVideo();
+          player.seekTo(startTime, true);
+        } catch {}
+        const durationMs = Date.now() - startTimestamp;
+        cancel();
+        resolve({ success: false, adDetected, timeTakenMs: durationMs });
+      }
+    }, maxWaitMs);
+  });
+
+  const cancellable = promise as Promise<BurnPreRollResult> & { cancel: () => void };
+  cancellable.cancel = cancel;
+  return cancellable;
+}
+
 /**
  * Pre-buffer: mute → seekTo → play briefly → pause
  * Call during countdown to have the video ready

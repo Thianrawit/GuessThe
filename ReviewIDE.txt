@@ -1,21 +1,33 @@
 ═══════════════════════════════════════════════════
-  ReviewIDE — Project Documentation Update (can.txt)
+  ReviewIDE — Silent Pre-roll Burner YouTube Refactor
   Date: 2026-09-05
 ═══════════════════════════════════════════════════
 
-[DONE] docs: ปรับปรุงคู่มือ can.txt ให้เป็นเวอร์ชันล่าสุดและครอบคลุมทุกระบบ
+1. สรุปการปรับปรุงระบบสื่อ (Media Player Refactor):
+   - ยกเลิกการเชื่อมต่อภายนอกผ่าน Invidious / Cloudflare Worker Stream Resolver ทั้งหมด
+   - สลับกลับมาใช้ YouTube IFrame API แท้ 100%
+   - นำเข้าเทคนิค "Silent Pre-roll Burner" เพื่อเผาโฆษณา YouTube ทิ้งหลังม่านดำทึบแบบไร้เสียงล่วงหน้า ทำให้ช่วงทาย 1-3 วินาทีไม่มีโฆษณาคั่น 100%
 
-สิ่งที่อัปเดตใน can.txt:
-  1. โครงสร้างโปรเจกต์ใหม่:
-     - เพิ่ม .github/workflows/deploy.yml (ระบบ CI/CD GitHub Actions)
-  2. สเตจและฟังก์ชันใหม่ใน Game Screen:
-     - หน้า Initial Buffering พร้อมตัวตรวจเช็คสถานะโหลดของผู้เล่นทุกคน
-     - ระบบ Hard Timeout 10 วินาที พร้อมปุ่ม Force Start ของ Host
-     - หน้าจอนับถอยหลัง 3.. 2.. 1.. สีดำสนิท 100% ป้องกันวิดีโอรั่ว
-     - หน้ากาก Anti-Spoiler Header Mask ทึบแสง ปิดชื่อคลิปและ Avatar ของ YouTube มิดชิด
-     - การเล่นคลิปเฉลยเต็มรูปแบบ (Full Reveal Phase) ก่อนเข้าตารางคะแนน
-     - Logic สีปุ่มช้อยส์ใหม่: เขียวเสมอสำหรับข้อถูก / แดงเฉพาะข้อผิดที่ตนเองกด / Dim ปุ่มที่ไม่เกี่ยวข้อง
-     - หน้ากระดานคะแนนคั่นระหว่างข้อ (Intermediate Leaderboard) พร้อม FLIP Animation สลับการ์ดผู้เล่น
-  3. ระบบเครือข่าย Multiplayer:
-     - ป้องกันชื่อผู้เล่นซ้ำ และระบบ Clean-up Zombie Peer ที่หลุดการเชื่อมต่อ
-═══════════════════════════════════════════════════
+2. ไฟล์ที่ได้รับการปรับปรุง:
+   - src/engine/youtube-player.ts:
+     * เพิ่มฟังก์ชัน `burnPreRoll(player, rawVideoId, startTime, maxWaitMs)`:
+       - สั่ง `player.mute()`
+       - สั่ง `player.loadVideoById({ videoId, startSeconds: startTime })`
+       - สั่ง `player.playVideo()` ทันที
+       - ตรวจสอบสถานะ Ad ผ่าน `getAdState()`, `isAdPlaying()`, `getVideoData()`, และ `getDuration()`
+       - เมื่อโฆษณาจบลงและตัวเล่นวิ่งมาถึงจุด `startTime` จะสั่ง `player.pauseVideo()`, `player.seekTo(startTime, true)` และ resolve ผลลัพธ์
+     * เพิ่มฟังก์ชัน `cancelBurnPreRoll()` สำหรับหยุด polling ทันทีเมื่อเปลี่ยนสถานะหรือเลิกเล่น
+   - src/screens/game-screen.ts:
+     * ตัดการ import และ dependency ของ stream-resolver
+     * ปรับปรุงคอนเทนเนอร์สื่อให้ใช้ YouTube IFrame Player เป็นหลัก 100% (`game-yt-player-wrap`)
+     * INITIAL_BUFFERING: รัน `burnPreRoll` เผาโฆษณาข้อแรกเงียบๆ หลังม่านดำ 10 วินาที เมื่อพร้อมส่ง `signalBufferReady`
+     * COUNTDOWN: จอดำสนิท 100% ป้องกันภาพหลุด สั่ง `player.seekTo(startTime, true)`
+     * SNIPPET_PLAYING: สั่ง `player.unMute()`, `player.playVideo()`, เล่นตาม `snippetDuration` (1-3 วินาที) แล้ว `player.pauseVideo()` ทันที พร้อมคลุมม่านดำเข้าสู่ช่วงตอบคำถาม
+     * REVEAL: สั่ง `player.seekTo(revealStart, true)`, ปลดม่านดำ, สั่ง `player.playVideo()` ต่อเนื่อง 5 วินาที แล้วตัดหยุดเข้าสู่ Intermediate Leaderboard
+     * INTERMEDIATE_LEADERBOARD: รัน `burnPreRoll` เผาโฆษณาสำหรับข้อถัดไป (N+1) หลังม่านดำ 4.5 วินาทีแบบ Double-Buffering
+   - src/vite-env.d.ts:
+     * ขยาย type definition ของ `loadVideoById` และ `cueVideoById` ใน `YT.Player` ให้รองรับ object parameter `{ videoId, startSeconds, endSeconds }`
+
+3. การตรวจสอบความถูกต้อง (Verification):
+   - ผ่านการคอมไพล์ TypeScript และทดสอบคำสั่ง `npm.cmd run build` ผ่าน 100% (exit code 0)
+   - ไม่มีการแก้ไขหรือดัดแปลงส่วนของดีไซน์ UI ตามเงื่อนไขอย่างเคร่งครัด
