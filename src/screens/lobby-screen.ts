@@ -18,9 +18,9 @@ export function renderLobbyScreen(): void {
     const container = document.createElement('div');
     container.className = 'min-h-[100dvh] flex flex-col items-center justify-center px-4 py-8';
 
-    let roomCode = '';
+    let roomCode = roomCodeParam;
     let players: PlayerInfo[] = [];
-    let isConnecting = mode === 'host' || mode === 'client';
+    let isConnecting = mode === 'host' || (mode === 'client' && Boolean(roomCodeParam));
     let errorMsg = '';
 
     // ── Prevent duplicate event listener registration ──
@@ -290,13 +290,16 @@ export function renderLobbyScreen(): void {
             document.getElementById('lobby-btn-join-room')?.click();
           }
         });
+        let isJoiningDirect = false;
         document.getElementById('lobby-btn-join-room')?.addEventListener('click', async () => {
+          if (isJoiningDirect || isConnecting) return;
           const code = lobbyRoomInput?.value.trim().replace(/[^0-9]/g, '') || '';
           if (code.length !== 5) {
             errorMsg = '⚠️ กรุณาใส่รหัสห้องตัวเลข 5 หลักให้ครบ';
             renderLobbyContent();
             return;
           }
+          isJoiningDirect = true;
           isConnecting = true;
           errorMsg = '';
           renderLobbyContent();
@@ -309,6 +312,8 @@ export function renderLobbyScreen(): void {
             errorMsg = (e as Error).message;
             isConnecting = false;
             renderLobbyContent();
+          } finally {
+            isJoiningDirect = false;
           }
         });
       }, 0);
@@ -335,10 +340,46 @@ export function renderLobbyScreen(): void {
             renderLobbyContent();
           },
           onPlayerJoin: (peerId, name) => {
-            if (gameController.players.length >= 10) return;
-            gameController.addPlayer(peerId, name, false);
+            const cleanName = (name || 'Player').trim();
+            if (!cleanName) return;
+
+            // 1. If this exact peerId already exists, update name if changed
+            const existingByPeer = gameController.players.find((p) => p.peerId === peerId);
+            if (existingByPeer) {
+              existingByPeer.name = cleanName;
+              renderLobbyContent();
+              return;
+            }
+
+            // 2. If a player with the same name already exists in the room
+            const existingByName = gameController.players.find(
+              (p) => p.name.trim().toLowerCase() === cleanName.toLowerCase()
+            );
+
+            if (existingByName) {
+              if (existingByName.isHost) {
+                // Name taken by host — reject join
+                peerManager.closeConnection(peerId);
+                return;
+              }
+
+              // Same player reconnecting or duplicate connection — remove stale entry and close old connection
+              console.log(`[Lobby] Player "${cleanName}" reconnected/duplicated. Replacing old peerId (${existingByName.peerId}) with (${peerId})`);
+              gameController.removePlayer(existingByName.peerId);
+              peerManager.closeConnection(existingByName.peerId);
+            }
+
+            // 3. Room capacity check (max 10 players total)
+            if (gameController.players.length >= 10) {
+              peerManager.closeConnection(peerId);
+              return;
+            }
+
+            // 4. Add the player
+            gameController.addPlayer(peerId, cleanName, false);
             players = gameController.players;
-            // Send player list to all
+
+            // 5. Broadcast authoritative player list to ALL connected peers
             peerManager.broadcast({
               type: 'PLAYER_LIST',
               players: gameController.players,
@@ -404,16 +445,26 @@ export function renderLobbyScreen(): void {
 
     function handlePacket(packet: NetworkPacket): void {
       switch (packet.type) {
-        case 'PLAYER_LIST':
-          players = packet.players;
+        case 'PLAYER_LIST': {
+          // Deduplicate players by peerId and unique name
+          const uniqueMap = new Map<string, PlayerInfo>();
+          const seenNames = new Set<string>();
+          for (const p of packet.players) {
+            const cleanName = p.name.trim().toLowerCase();
+            // If already seen this peerId or name, skip duplicate
+            if (uniqueMap.has(p.peerId) || seenNames.has(cleanName)) continue;
+            uniqueMap.set(p.peerId, p);
+            seenNames.add(cleanName);
+          }
+          players = Array.from(uniqueMap.values());
           // Clear existing players and re-populate from authoritative host list
-          // Use resetToLobby instead of destroy to preserve config/callbacks
           gameController.resetToLobby();
-          packet.players.forEach((p) => {
+          players.forEach((p) => {
             gameController.addPlayer(p.peerId, p.name, p.isHost);
           });
           renderLobbyContent();
           break;
+        }
         case 'ROOM_INIT':
           gameController.receiveGameInit(packet.questions, packet.config, packet.players);
           navigate('/game');

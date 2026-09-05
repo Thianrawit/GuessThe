@@ -28,6 +28,8 @@ class PeerManager {
   private _peerId: string = '';
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
+  private _isConnecting: boolean = false;
+
   get role(): PeerRole { return this._role; }
   get roomCode(): string { return this._roomCode; }
   get peerId(): string { return this._peerId; }
@@ -49,6 +51,7 @@ class PeerManager {
 
   /** Create a room as Host */
   async createRoom(roomCode: string): Promise<string> {
+    this.destroy();
     this._role = 'host';
     this._roomCode = roomCode;
 
@@ -78,10 +81,22 @@ class PeerManager {
 
   /** Join a room as Client */
   async joinRoom(roomCode: string, playerName: string): Promise<void> {
+    if (this._isConnecting) {
+      console.warn('[PeerManager] joinRoom already in progress, ignoring duplicate call');
+      return;
+    }
+    this._isConnecting = true;
+    this.destroy();
     this._role = 'client';
     this._roomCode = roomCode;
 
     return new Promise((resolve, reject) => {
+      const finish = (err?: Error) => {
+        this._isConnecting = false;
+        if (err) reject(err);
+        else resolve();
+      };
+
       this.peer = new Peer({
         debug: 0,
       } as any);
@@ -99,7 +114,7 @@ class PeerManager {
           this.setupDataListener(conn, hostPeerId);
           this.startHeartbeat();
           if (this.callbacks.onOpen) this.callbacks.onOpen(id);
-          resolve();
+          finish();
         });
 
         conn.on('close', () => {
@@ -111,20 +126,20 @@ class PeerManager {
           this.connections.delete(hostPeerId);
           const errMsg = `ไม่สามารถเชื่อมต่อห้อง ${roomCode}: ${err.message || err}`;
           if (this.callbacks.onError) this.callbacks.onError(errMsg);
-          reject(new Error(errMsg));
+          finish(new Error(errMsg));
         });
 
         // Timeout after 10s
         setTimeout(() => {
           if (!conn.open) {
-            reject(new Error(`หมดเวลาเชื่อมต่อห้อง ${roomCode}`));
+            finish(new Error(`หมดเวลาเชื่อมต่อห้อง ${roomCode}`));
           }
         }, 10000);
       });
 
       this.peer.on('error', (err) => {
         if (this.callbacks.onError) this.callbacks.onError(err.message);
-        reject(new Error(err.message));
+        finish(new Error(err.message));
       });
     });
   }
@@ -140,13 +155,20 @@ class PeerManager {
         return;
       }
 
-      conn.on('open', () => {
+      let opened = false;
+      const onOpen = () => {
+        if (opened) return;
+        opened = true;
         this.connections.set(conn.peer, conn);
         this.lastSeen.set(conn.peer, Date.now());
         this.setupDataListener(conn, conn.peer);
-      });
+      };
 
-      // Note: close/error handlers are managed by setupDataListener to avoid duplicate callbacks
+      if (conn.open) {
+        onOpen();
+      } else {
+        conn.on('open', onOpen);
+      }
     });
   }
 
@@ -167,10 +189,10 @@ class PeerManager {
         this.callbacks.onReceive(remotePeerId, packet);
       }
 
-      // If host receives a PLAYER_JOIN, notify callback
+      // If host receives a PLAYER_JOIN, notify callback with remote peer ID
       if (this._role === 'host' && packet.type === 'PLAYER_JOIN') {
         if (this.callbacks.onPlayerJoin) {
-          this.callbacks.onPlayerJoin(packet.peerId, packet.name);
+          this.callbacks.onPlayerJoin(remotePeerId, packet.name);
         }
       }
     });
@@ -186,6 +208,16 @@ class PeerManager {
       this.lastSeen.delete(remotePeerId);
       if (this.callbacks.onPlayerLeave) this.callbacks.onPlayerLeave(remotePeerId);
     });
+  }
+
+  /** Explicitly close and remove a connection by peerId */
+  closeConnection(peerId: string): void {
+    const conn = this.connections.get(peerId);
+    if (conn) {
+      try { conn.close(); } catch { /* ignore */ }
+      this.connections.delete(peerId);
+    }
+    this.lastSeen.delete(peerId);
   }
 
   /** Send packet to host (client) or to a specific peer (host) */
@@ -271,9 +303,17 @@ class PeerManager {
     this._role = 'solo';
     this._roomCode = '';
     this._peerId = '';
+    this._isConnecting = false;
     this.callbacks = {};
   }
 }
 
 // Singleton instance
 export const peerManager = new PeerManager();
+
+// Clean up peer connections when the browser tab is closed or reloaded
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    peerManager.destroy();
+  });
+}

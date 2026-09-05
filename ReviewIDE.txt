@@ -1,58 +1,35 @@
-Review — Bug Fix: Solo & Multiplayer Game Not Starting
-====================================================
+Review — การแก้ปัญหาชื่อผู้เล่นซ้ำในโหมดออนไลน์ (Multiplayer Duplicate Player Bug)
+========================================================================================
 
-Root Cause:
------------
-renderLobbyContent() ใน lobby-screen.ts ถูกเรียกหลายครั้งตอน init 
-(ครั้งแรก line 422 ก่อน init() + ครั้งที่สอง line 324 หลัง init สำหรับ solo)
+1. สาเหตุของปัญหา (Root Causes):
+--------------------------------
+1.1 ฝั่ง Host ขาดการ Deduplicate ผู้เล่น:
+    - ใน `lobby-screen.ts` เมื่อ Host ได้รับ callback `onPlayerJoin(peerId, name)` ระบบนำไปเพิ่มลง `gameController.addPlayer(peerId, name, false)` ทันทีโดยไม่ได้ตรวจสอบว่ามีชื่อผู้เล่นซ้ำกันอยู่ในห้องหรือไม่
+    - หาก Client มีการเชื่อมต่อซ้ำ (เช่น กดปุ่มเบิ้ล, รีเฟรชหน้าจอ F5, หรือสัญญาณหลุดแล้ว Reconnect) จะได้ `peerId` ใหม่ แต่ชื่อเดิม ทำให้ `gameController` มองเป็น 2 ผู้เล่นที่มี `peerId` คนละตัวกัน จึงแสดงชื่อซ้ำ เช่น `asd (ผู้เล่น #2)` และ `asd (ผู้เล่น #3)`
+1.2 ฝั่ง Client ส่งคำขอ Join ซ้ำ (Duplicate Join Requests):
+    - ใน `home-screen.ts`: ปุ่ม "เข้าห้อง" (`btn-join-room`) ไม่มีตัวป้องกัน Double-click (`isNavigating` flag) ทำให้การกดเบิ้ลสั่งให้สร้าง Peer ซ้อนกัน 2 ตัว
+    - ใน `lobby-screen.ts`: ค่าเริ่มต้น `let roomCode = '';` แทนที่จะรับค่าจาก `params.room` ทำให้ตอนเริ่มต้นหน้าจอ Client เผลอเรนเดอร์กล่องให้กรอกรหัสห้องซ้ำชั่วขณะ และปุ่ม `#lobby-btn-join-room` ขาดการป้องกันการกดซ้ำ
+1.3 ใน `peer-manager.ts` ไม่เคลียร์ Peer เก่า:
+    - ฟังก์ชัน `joinRoom()` และ `createRoom()` ไม่ได้เรียก `this.destroy()` ก่อนเริ่มสร้าง Peer ตัวใหม่ ทำให้ Peer เก่าและ DataChannel เดิมยังค้างอยู่ในหน่วยความจำและยังคงเชื่อมต่อกับ Host อยู่
+    - เมื่อผู้เล่นปิดแท็บหรือรีเฟรชหน้าเว็บ ไม่ได้มี Event Listener `beforeunload` สั่งตัดการเชื่อมต่อแบบฉับพลัน
 
-แต่ละครั้ง register event listener ผ่าน setTimeout(() => {...}, 0)
-ผลคือ btn-start-game มี click handler ซ้ำกัน 2+ ชุด
+2. วิธีการแก้ไข (Implemented Solutions):
+--------------------------------------
+2.1 เพิ่มระบบตรวจจับและแทนที่การเชื่อมต่อซ้ำที่ Host (`lobby-screen.ts`):
+    - ใน `onPlayerJoin(peerId, name)`:
+      - ตรวจสอบ `existingByPeer`: ถ้า `peerId` เดิมส่งมาซ้ำ ให้อัปเดตชื่อเดิม
+      - ตรวจสอบ `existingByName`: ถ้ามีผู้เล่นชื่อเดียวกันอยู่ในห้องแล้ว (ไม่ใช่ Host) ถือว่าเป็นการ Reconnect หรือการต่อเชื่อมซ้ำ ให้สั่ง `gameController.removePlayer(existingByName.peerId)` และสั่ง `peerManager.closeConnection(existingByName.peerId)` เพื่อตัดการเชื่อมต่อของผีตัวเก่าออกทันที แล้วแทนที่ด้วยการเชื่อมต่อใหม่
+2.2 ป้องกันการเชื่อมต่อซ้อนฝั่ง Client (`peer-manager.ts`):
+    - เพิ่ม `_isConnecting` flag และเรียก `this.destroy()` ทันทีเมื่อเรียก `joinRoom()` หรือ `createRoom()` ป้องกันไม่ให้มี Peer สองตัวทำงานพร้อมกัน
+    - เพิ่มฟังก์ชัน `closeConnection(peerId)` เพื่อให้ Host สามารถเตะการเชื่อมต่อเดิมที่หมดอายุออกได้
+    - เพิ่ม `window.addEventListener('beforeunload')` เคลียร์ Peer ทันทีเมื่อผู้เล่นรีเฟรชหรือปิดแท็บ
+2.3 ป้องกันการส่งคำขอซ้ำจากหน้าบ้าน (`home-screen.ts` & `lobby-screen.ts`):
+    - เพิ่มตัวแปร `isNavigating` ป้องกันการกดปุ่มซ้ำทั้งใน Solo, Create Room, และ Join Room
+    - กำหนดค่าเริ่มต้น `roomCode` ให้ตรงกับ `roomCodeParam` ทันที ป้องกันไม่ให้หน้าจอ Client แสดงช่องกรอกรหัสซ้ำ
+    - กรองข้อมูลซ้ำ (Deduplicate) ในแพ็กเก็ต `PLAYER_LIST` ฝั่ง Client เพื่อความปลอดภัยสองชั้น
 
-เมื่อ user กด "เริ่มเกม":
-  Handler 1: startGame() → navigate('/game') → DOM ถูกเปลี่ยนเป็น game screen ✅
-  Handler 2: อ่าน config จาก DOM → แต่ select element ไม่มีแล้ว (DOM ถูกเปลี่ยน)
-    → questionCount = undefined → parseInt(undefined) = NaN
-    → generateQuestions(pool, NaN) → slice(0, NaN) → return []
-    → _questions = [] → currentQuestion = null
-    → navigate('/game') → route guard เจอ currentQuestion === null
-    → redirect ไป /main 💥
-
-เรื่องเดียวกันนี้ทำให้ Multiplayer lobby มีปัญหา player ซ้ำ
-เพราะ event listener ซ้ำกันหลายชุด
-
-Fixes Applied:
---------------
-1. lobby-screen.ts: เพิ่ม renderGeneration counter
-   - แต่ละ renderLobbyContent() increment counter
-   - setTimeout callback เช็ค generation ก่อน register listeners
-   - ถ้า generation ไม่ตรง (มี render ใหม่กว่า) → skip ไม่ register
-   
-2. lobby-screen.ts: เพิ่ม startedGame flag
-   - กัน double-fire ของ start button
-   - reset เมื่อ error เพื่อให้ retry ได้
-
-3. lobby-screen.ts: parseInt fallback
-   - questionCount === 'all' ? 'all' : (parseInt(questionCount) || 10)
-   - กัน NaN จาก undefined DOM reads
-
-4. game-controller.ts: เพิ่ม phase guard ใน startGame()
-   - ถ้า phase !== 'LOBBY' → ignore (ป้องกัน double-start)
-
-5. shuffle.ts: เพิ่ม NaN guard ใน generateQuestions()
-   - ถ้า count เป็น NaN/invalid → fallback ใช้ pool ทั้งหมด
-   - Math.max(1, ...) guarantee อย่างน้อย 1 question
-
-6. lobby-screen.ts: PLAYER_LIST handler
-   - เปลี่ยน gameController.destroy() → gameController.resetToLobby()
-   - destroy() จะ wipe config/callbacks ด้วย ซึ่งไม่ถูกต้อง
-
-7. game-controller.ts: resetToLobby() ปรับปรุง
-   - เพิ่ม _answerTimes.clear() + _players.clear()
-   - เพิ่ม clearPlayers() method ใหม่
-
-Test Results:
--------------
-- Solo mode: เล่นได้ ไม่ redirect กลับ /main ✅
-- Question progression: 1/10 → 2/10 → ... ✅
-- TypeScript compilation: clean ✅
+3. ผลการทดสอบ (Verification):
+-----------------------------
+- รัน `npx.cmd tsc --noEmit`: ผ่าน 100% ไม่มี Error
+- รัน `npm.cmd run build`: ผ่าน Build สำเร็จ (Vite + TypeScript)
+- ตรวจสอบการเข้าห้องและการเรนเดอร์ในเบราว์เซอร์: แสดงผลถูกต้อง ไม่มีชื่อซ้ำ

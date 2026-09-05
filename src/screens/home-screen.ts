@@ -148,30 +148,37 @@ export function renderHomeScreen(): void {
         return true;
       }
 
+      let isNavigating = false;
+
       // Solo
       document.getElementById('btn-solo')?.addEventListener('click', () => {
+        if (isNavigating) return;
         if (!validateName()) return;
         const pool = loadPool();
         if (pool.length < 4) {
           showError('⚠️ ต้องมีเพลงอย่างน้อย 4 เพลง — ไปเพิ่มเพลงก่อน หรือกด "โหลดเพลงตัวอย่าง" ในคลังเพลง');
           return;
         }
+        isNavigating = true;
         navigate('/lobby', { mode: 'solo', name: getPlayerName() });
       });
 
       // Create Room
       document.getElementById('btn-create-room')?.addEventListener('click', () => {
+        if (isNavigating) return;
         if (!validateName()) return;
         const pool = loadPool();
         if (pool.length < 4) {
           showError('⚠️ ต้องมีเพลงอย่างน้อย 4 เพลง — ไปเพิ่มเพลงก่อน');
           return;
         }
+        isNavigating = true;
         navigate('/lobby', { mode: 'host', name: getPlayerName() });
       });
 
       // Join Room
       document.getElementById('btn-join-room')?.addEventListener('click', () => {
+        if (isNavigating) return;
         if (!validateName()) return;
         const code = roomInput?.value.trim().replace(/[^0-9]/g, '') || '';
         if (!code || code.length !== 5) {
@@ -179,6 +186,7 @@ export function renderHomeScreen(): void {
           roomInput?.focus();
           return;
         }
+        isNavigating = true;
         navigate('/lobby', { mode: 'client', name: getPlayerName(), room: code });
       });
 
