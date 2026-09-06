@@ -1,34 +1,97 @@
 ═══════════════════════════════════════════════════
-  ReviewIDE — Silent Pre-roll Burner YouTube Refactor
-  Date: 2026-09-05
+  ReviewIDE — Dual Player (A/B Ping-Pong) YouTube Refactor
+  Date: 2026-09-06
 ═══════════════════════════════════════════════════
 
-1. สรุปการปรับปรุงระบบสื่อ (Media Player Refactor):
-   - ยกเลิกการเชื่อมต่อภายนอกผ่าน Invidious / Cloudflare Worker Stream Resolver ทั้งหมด
-   - สลับกลับมาใช้ YouTube IFrame API แท้ 100%
-   - นำเข้าเทคนิค "Silent Pre-roll Burner" เพื่อเผาโฆษณา YouTube ทิ้งหลังม่านดำทึบแบบไร้เสียงล่วงหน้า ทำให้ช่วงทาย 1-3 วินาทีไม่มีโฆษณาคั่น 100%
+1. สรุปภาพรวมสถาปัตยกรรมเครื่องเล่นสื่อ (Dual-Player Architecture):
+   - พัฒนาระบบเครื่องเล่นคู่สลับฟันปลา (A/B Ping-Pong Buffering) ผ่าน `DualYouTubePlayerManager` เพื่อขจัดปัญหาโฆษณา YouTube แทรกระหว่างเล่นเกม 100%
+   - เครื่องเล่นคู่ถูกสร้างเป็น Persistent Stage ใน DOM ซึ่งไม่ถูกทำลายหรือ Reload ซ้ำเมื่อมีการสลับหน้าจอ (No IFrame Reload / No White Flash)
+   - มีระบบ Autoplay Warm-up (`warmUp()`) ปลดล็อก Autoplay Policy ของเบราว์เซอร์ล่วงหน้าทันทีที่ผู้ใช้กด "สร้างห้อง", "เข้าห้อง", หรือ "เล่นคนเดียว"
+   - จัดสรรเวลาให้ Background Player เผาโฆษณาล่วงหน้านานกว่า 22 วินาที (ช่วง Snippet 3s + Answering 10s + Reveal 5s + Leaderboard 4.5s) ทำให้วิดีโอข้อถัดไปพร้อมเล่นทันที 100%
 
-2. ไฟล์ที่ได้รับการปรับปรุง:
+2. ไฟล์ที่ได้รับการแก้ไขและปรับปรุง:
    - src/engine/youtube-player.ts:
-     * เพิ่มฟังก์ชัน `burnPreRoll(player, rawVideoId, startTime, maxWaitMs)`:
-       - สั่ง `player.mute()`
-       - สั่ง `player.loadVideoById({ videoId, startSeconds: startTime })`
-       - สั่ง `player.playVideo()` ทันที
-       - ตรวจสอบสถานะ Ad ผ่าน `getAdState()`, `isAdPlaying()`, `getVideoData()`, และ `getDuration()`
-       - เมื่อโฆษณาจบลงและตัวเล่นวิ่งมาถึงจุด `startTime` จะสั่ง `player.pauseVideo()`, `player.seekTo(startTime, true)` และ resolve ผลลัพธ์
-     * เพิ่มฟังก์ชัน `cancelBurnPreRoll()` สำหรับหยุด polling ทันทีเมื่อเปลี่ยนสถานะหรือเลิกเล่น
+     * พัฒนาคลาส `DualYouTubePlayerManager`:
+       - จัดการ 2 สล็อต: Slot A (`#yt-player-a`) และ Slot B (`#yt-player-b`)
+       - `ensureContainers()` สร้าง host stage ถาวรใน `document.body`
+       - `warmUp()` ปลดล็อกนโยบาย autoplay ผ่านการ mute + play/pause สั้นๆ ในคลิกแรก
+       - `preload(slot, videoId, startTime)`: ดักจับและเผาโฆษณาเบื้องหลัง (polling 250ms, ตรวจ duration < 60s, getAdState, getPlayerState) จนถึงตัววิดีโอหลัก แล้วสั่ง pauseVideo() และ seekTo(startTime) ทันที มี Hard Timeout 25s ป้องกันค้าง
+       - `switchActivePlayer()`: สลับ activeSlot ไปมาระหว่าง A และ B ปรับ visibility / opacity ใน 0ms พร้อมสั่ง pause/mute ให้ Background slot
+       - `playSnippet(durationSec)` และ `playReveal(revealStart, durationSec)` ควบคุมการเล่นเสียง/ภาพ
+       - `mountToGameScreen(viewportAnchor)` ซิงก์ตำแหน่ง stage เข้ากับกรอบ 16:9 อัตโนมัติด้วย ResizeObserver
+       - คงฟังก์ชันสำหรับ Legacy API / Track Editor Screen ไว้ครบถ้วน ไม่กระทบหน้าอื่น
+   - src/screens/lobby-screen.ts:
+     * เรียก `dualPlayerManager.warmUp()` ทันทีในจังหวะเข้าห้อง
+     * สั่ง `dualPlayerManager.preload('A', questions[0].youtubeId, questions[0].startTime)` ล่วงหน้าทันทีที่มี Track Pool
+     * เมื่อผู้เล่นในห้องได้รับ `ROOM_INIT` จะสั่ง preload ข้อ 1 ในพื้นหลังทันที
+   - src/screens/home-screen.ts:
+     * เชื่อมต่อ `dualPlayerManager.warmUp()` บนปุ่ม "เล่นคนเดียว", "สร้างห้อง", และ "เข้าห้อง" เพื่อดักจับ User Gesture ปลดล็อก Autoplay Policy
+   - src/game/game-controller.ts:
+     * เพิ่มเมธอด `ensureQuestionsPrepared()` ให้เตรียมชุดคำถามล่วงหน้าได้ตั้งแต่ใน Lobby
+     * ปรับปรุง `startGame()` ให้ใช้ชุดคำถามที่เตรียมไว้เดิมหากมีอยู่แล้ว ป้องกันการสุ่มใหม่ทำให้วิดีโอที่พรีโหลดไว้ตรงกับข้อ 1 ในเกม 100%
    - src/screens/game-screen.ts:
-     * ตัดการ import และ dependency ของ stream-resolver
-     * ปรับปรุงคอนเทนเนอร์สื่อให้ใช้ YouTube IFrame Player เป็นหลัก 100% (`game-yt-player-wrap`)
-     * INITIAL_BUFFERING: รัน `burnPreRoll` เผาโฆษณาข้อแรกเงียบๆ หลังม่านดำ 10 วินาที เมื่อพร้อมส่ง `signalBufferReady`
-     * COUNTDOWN: จอดำสนิท 100% ป้องกันภาพหลุด สั่ง `player.seekTo(startTime, true)`
-     * SNIPPET_PLAYING: สั่ง `player.unMute()`, `player.playVideo()`, เล่นตาม `snippetDuration` (1-3 วินาที) แล้ว `player.pauseVideo()` ทันที พร้อมคลุมม่านดำเข้าสู่ช่วงตอบคำถาม
-     * REVEAL: สั่ง `player.seekTo(revealStart, true)`, ปลดม่านดำ, สั่ง `player.playVideo()` ต่อเนื่อง 5 วินาที แล้วตัดหยุดเข้าสู่ Intermediate Leaderboard
-     * INTERMEDIATE_LEADERBOARD: รัน `burnPreRoll` เผาโฆษณาสำหรับข้อถัดไป (N+1) หลังม่านดำ 4.5 วินาทีแบบ Double-Buffering
-   - src/vite-env.d.ts:
-     * ขยาย type definition ของ `loadVideoById` และ `cueVideoById` ใน `YT.Player` ให้รองรับ object parameter `{ videoId, startSeconds, endSeconds }`
+     * เชื่อมต่อ `DualYouTubePlayerManager` เข้ากับหน้าจอเกมผ่าน `mountToGameScreen`
+     * INITIAL_BUFFERING: มี Hard Timeout 10 วินาที หากผู้เล่นทุกคนพร้อมจะเริ่มนับถอยหลังทันที หากเกิน 10 วินาทีจะแสดงปุ่มเด่นสีแดงนีออน `⚡ บังคับเริ่มเกมเลย (Force Start)` ให้ Host กดเพื่อตัดเข้า Countdown ทันที
+     * COUNTDOWN: แสดง 3.. 2.. 1.. จอดำทึบ 100% ไม่มีภาพ/เสียงหลุด
+     * SNIPPET_PLAYING: สั่งเล่น Snippet ผ่าน `dualPlayerManager.playSnippet()` ล็อคปุ่มคำตอบ พร้อมกับสั่งให้ Background Player เริ่ม preload และเบิร์นโฆษณาสำหรับข้อถัดไป (N+1) ทันที
+     * ANSWERING: คลุมม่านดำ ปลดล็อคปุ่มคำตอบ เริ่มนับถอยหลังเวลาตอบ
+     * REVEAL: เปิดคลิปเฉลยต่อเนื่อง 5 วินาที พร้อม Personalized Answer Styling:
+       - ข้อที่ถูกต้องเป็นสีเขียวเสมอ
+       - ข้อที่ผู้เล่นคนนั้นกดผิด แสดงสีแดงเฉพาะปุ่มที่ตัวเองกด
+       - ข้อที่เหลือที่ไม่ได้เลือกถูก Dim สีลง (opacity-35)
+       - หากผู้เล่นตอบถูก ไม่มีการแสดงสีแดงในตัวเลือกใด
+     * INTERMEDIATE_LEADERBOARD: แสดงตารางคะแนน 4.5 วินาที พร้อม FLIP Animation เมื่อครบเวลาจะเรียก `dualPlayerManager.switchActivePlayer()` สลับสล็อตตัวเล่นใน 0ms แล้วเริ่มข้อถัดไปทันที
+     * cleanupGameScreen: ปิดเสียง ซ่อน stage และหยุดการทำงานของ player ทั้งหมดอย่างปลอดภัย
+   - src/style.css:
+     * เพิ่มและปรับแต่งคลาส `.btn-force-start` พร้อมเอฟเฟกต์ไฟนีออนแดงเรืองแสง (Neon pulse glow)
 
-3. การตรวจสอบความถูกต้อง (Verification):
-   - ผ่านการคอมไพล์ TypeScript และทดสอบคำสั่ง `npm.cmd run build` ผ่าน 100% (exit code 0)
-   - ไม่มีการแก้ไขหรือดัดแปลงส่วนของดีไซน์ UI ตามเงื่อนไขอย่างเคร่งครัด
-   - ทำการ Commit & Push ขึ้น GitHub เรียบร้อย (`681366b` -> `origin/main`)
+3. ผลการทดสอบ (Verification):
+   - TypeScript Compilation & Production Build:
+     * คำสั่ง `npm.cmd run build` ผ่าน 100% สำเร็จเรียบร้อย (exit code 0)
+   - การทดสอบ End-to-End บนเบราว์เซอร์จริงผ่าน Browser Subagent:
+     * ตรวจสอบหน้า Landing -> กรอกชื่อ -> หน้า Lobby -> เริ่มเกม -> เข้าสู่ Game Screen
+     * ทดสอบ Buffering -> Countdown 3-2-1 -> Snippet -> ตอบคำถาม (Choice A) -> Reveal เฉลย -> Leaderboard FLIP Animation
+     * คอนโซลยืนยันการทำงานของ DualPlayer Pre-buffering สลับ Slot A/B เบื้องหลังอย่างไร้รอยต่อ ไม่มี error ค้าง
+
+═══════════════════════════════════════════════════
+  ReviewIDE — Hotfix: 4 Issues (Question Count, Countdown, Anti-Spoiler & Slot Sync)
+  Date: 2026-09-06
+═══════════════════════════════════════════════════
+
+1. แก้ไขปัญหาจำนวนข้อไม่ตรงตามที่ตั้ง (Question Count Mismatch):
+   - สาเหตุ: ใน `lobby-screen.ts` มีการเรียก `ensureQuestionsPrepared()` ไว้ล่วงหน้าตั้งแต่ตอนเข้า Lobby ขณะที่ค่าคอนฟิกยังเป็นค่าเริ่มต้น (`'all'`) ทำให้ชุดคำถามมีขนาดตามเพลงทั้งหมดในคลัง เมื่อผู้ใช้ปรับ dropdown จำนวนข้อ (เช่น 5 หรือ 10) ใน `game-controller.ts:startGame()` มีเงื่อนไข `if (this._questions.length === 0)` ซึ่งไม่ทำงานเพราะมีคำถามเดิมอยู่แล้ว
+   - การแก้ไข:
+     * `src/game/game-controller.ts`: ปรับปรุง `setConfig()` และ `startGame()` ให้ตรวจสอบจำนวนข้อที่แท้จริง (`targetCount`) หากจำนวนข้อใน `this._questions` ไม่ตรงกับที่ตั้ง ให้ตัดทอน (`slice`) หรือสร้างใหม่ (`generateQuestions`) ให้ตรงเป๊ะ 100% (โดยเก็บข้อที่ 0 ที่พรีโหลดไว้เดิมได้)
+     * `src/screens/lobby-screen.ts`: เพิ่ม `change` event listener ให้ `#select-question-count` อัปเดต `gameController.setConfig` ทันทีที่ผู้ใช้เปลี่ยนตัวเลือก
+
+2. แก้ไขปัญหาปกคลิปขึ้นมาทับตัวเลขนับถอยหลัง (Countdown Overlay Covered by Video):
+   - สาเหตุ: `#dual-player-stage` อยู่ใน `document.body` ด้วย `position: fixed; z-index: 15;` ขณะที่ `#countdown-overlay` อยู่ใน `#media-viewport` ภายใน `#app` (ซึ่งไม่มี z-index) ทำให้ stage ของวิดีโอลอยทับ `#countdown-overlay` และตอน mount มีการเซ็ต `opacity: 1` ทันที
+   - การแก้ไข:
+     * `src/engine/youtube-player.ts`: เพิ่มเมธอด `setStageVisible(visible: boolean)` ให้สามารถซ่อน stage แบบเด็ดขาด (`opacity: 0; visibility: hidden; pointer-events: none;`)
+     * `src/screens/game-screen.ts`: ในช่วง Initial Buffering และ Countdown (3..2..1) จะสั่ง `dualPlayerManager.setStageVisible(false)` อย่างเข้มงวด ทำให้ตัวเลขนับถอยหลัง 3..2..1 บนจอดำใน `#media-viewport` เด่นชัด 100% ไม่ถูกปกคลิปหรือ iframe บดบัง
+
+3. ปิดชื่อคลิปเพื่อป้องกันสปอยล์ 100% (Anti-Spoiler Title Masking):
+   - สาเหตุ: แถบ anti-spoiler เดิมอยู่ใน `#app` จึงถูก `#dual-player-stage` ทับ
+   - การแก้ไข:
+     * `src/engine/youtube-player.ts`: สร้างแถบ `#dual-anti-spoiler-bar` ปักหมุดไว้ที่ส่วนบนสุดของ `#dual-player-stage` โดยตรง (สูง 72px, `z-index: 30`, พื้นหลังสีทึบ `#0a0a14` พร้อมโลโก้ GuessThe? และ badge) บังทับส่วน Title, Share Button และ Channel Avatar ของ YouTube Embed มิดชิด 100%
+     * มีเมธอด `updateAntiSpoiler(mode, showTitleMask)` เพื่อควบคุมการแสดงแถบปิดชื่อช่วงทาย และจะเฟดออกเฉพาะช่วงเฉลย (Reveal)
+
+4. แก้ไขปัญหาสล็อตคลิปสับสน เอาคลิปถัดไปหรือคลิปที่ทายแล้วมาขึ้นก่อน (Deterministic Slot Synchronization):
+   - สาเหตุ:
+     * มี ID ซ้ำซ้อน (`#yt-player-a` และ `#yt-player-b`) ทั้งใน `#dual-player-stage` และใน template ของ `game-screen.ts` ทำให้ `document.getElementById` ไปดึง element เปล่าใน `#app` มาจัดการสไตล์ผิดตัว
+     * ระบบเดิมสลับสล็อตด้วยการ toggle สลับไปมาตาม timeout (`switchActivePlayer`) ซึ่งหากหลุดจังหวะหรือใน multiplayer ฝั่ง client จะทำให้สล็อตไม่ตรงกับข้อที่กำลังเล่น
+   - การแก้ไข:
+     * `src/screens/game-screen.ts`: ลบ container ซ้ำซ้อนใน template ออก เปลี่ยนเป็น `#dual-player-anchor` สำหรับระบุพิกัดเท่านั้น
+     * `src/engine/youtube-player.ts`: จัดการ DOM wrappers (`#dual-slot-wrapper-a` และ `#dual-slot-wrapper-b`) โดยตรงผ่าน object reference
+     * พัฒนาระบบ Deterministic Slot Sync: `syncActiveSlot(questionIndex)` กำหนดสล็อตอย่างแม่นยำตามสูตรคณิตศาสตร์:
+       - ข้อคู่ (0, 2, 4, ...): สล็อต A เป็น Active Slot เสมอ
+       - ข้อคี่ (1, 3, 5, ...): สล็อต B เป็น Active Slot เสมอ
+     * Background Slot จะถูกตั้งค่าเป็น `opacity: 0; visibility: hidden; pointer-events: none; z-index: 1;` ตลอดเวลาการเผาโฆษณาและพรีโหลดเบื้องหลัง จึงไม่มีภาพคลิปถัดไปหรือคลิปเก่าหลุดออกมาให้เห็นแน่นอน 100%
+
+5. ผลการทดสอบ (Verification):
+   - `npm.cmd run build`: ผ่านฉลุย 100% (code 0)
+   - Browser Subagent E2E Test:
+     * ตั้งค่า 5 ข้อ -> เริ่มเกม -> ข้อแสดง 'ข้อ 1/5' ตรงเป๊ะ
+     * Countdown 3..2..1 ชัดเจน ไม่มี thumbnail บัง
+     * แถบ Anti-Spoiler ปิดชื่อ YouTube มิดชิด
+     * ตอบคำถาม -> เข้า Reveal ข้อ A (อะไรก็ยอม - LOSO) -> Leaderboard -> เข้าข้อ 2 แสดง 'ข้อ 2/5' พร้อมสลับคลิปใหม่อย่างถูกต้องสมบูรณ์

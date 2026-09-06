@@ -1,9 +1,10 @@
 /* ──────────────────────────────────────────────
    Game Screen — Main Gameplay Engine
-   - 100% Native YouTube IFrame API
-   - Silent Pre-roll Burner (Burns ads behind dark overlay)
+   - 100% Native Dual YouTube Player (Ping-Pong Buffering)
+   - Silent Pre-roll Ad-Burner in Background
    - Initial Buffering with 10s Hard Timeout & Force Start
-   - Intermediate Leaderboard with FLIP Animation & Double-Buffering
+   - Intermediate Leaderboard with FLIP Animation
+   - Personalized Reveal Styling
    ────────────────────────────────────────────── */
 
 import { setScreen } from '../utils/dom';
@@ -11,15 +12,7 @@ import { navigate } from '../utils/router';
 import { gameController } from '../game/game-controller';
 import { peerManager } from '../network/peer-manager';
 import { countdown } from '../engine/timer';
-import {
-  createYouTubePlayer,
-  burnPreRoll,
-  cancelBurnPreRoll,
-  playSegment,
-  playReveal as ytPlayReveal,
-  stopPlayer,
-  destroyPlayer,
-} from '../engine/youtube-player';
+import { dualPlayerManager } from '../engine/youtube-player';
 import type { NetworkPacket, QuestionSession, PlayerInfo } from '../types/index';
 
 // ── State variables for active game session ──
@@ -34,9 +27,6 @@ let hardTimeoutTimer: ReturnType<typeof setInterval> | null = null;
 let isForceStarted = false;
 let isPreparingNext = false;
 let hasAnsweredCurrent = false;
-
-let ytPlayerInstance: YT.Player | null = null;
-let currentLoadedVideoId: string | null = null;
 let activeSegmentCancel: (() => void) | null = null;
 
 // Store previous player positions for FLIP animation
@@ -84,27 +74,12 @@ export function renderGameScreen(): void {
         <div id="player-alert-banner" class="hidden text-center text-xs text-accent-yellow font-semibold mt-1 px-3 py-1 glass-card-light rounded-lg"></div>
       </div>
 
-      <!-- 16:9 Media Container with Persistent HTML5 Media Element -->
-      <div class="w-full max-w-3xl mx-auto mb-3 animate-slide-up" id="media-outer-box">
+      <!-- 16:9 Media Container with Dual-Player Stage -->
+      <div class="w-full max-w-3xl mx-auto mb-3" id="media-outer-box">
         <div class="w-full aspect-video bg-black rounded-2xl overflow-hidden relative shadow-2xl border border-border-subtle flex items-center justify-center" id="media-viewport">
-          
-          <!-- Anti-Spoiler Header Mask (Solid 100% Opaque Header Bar covering YouTube Title & Avatar) -->
-          <div class="absolute top-0 left-0 right-0 z-30 h-16 sm:h-20 px-3.5 bg-[#0a0a14] border-b border-white/10 flex items-center justify-between pointer-events-none shadow-lg" id="anti-spoiler-mask">
-            <div class="flex items-center gap-2">
-              <span class="w-2.5 h-2.5 rounded-full ${question?.type === 'video' ? 'bg-accent-blue' : 'bg-accent-purple'} animate-pulse"></span>
-              <span class="font-heading font-bold text-xs sm:text-sm text-text-primary tracking-wide">
-                GuessThe? <span class="gradient-text font-semibold">${question?.type === 'video' ? 'MV' : 'Music'}</span>
-              </span>
-            </div>
-            <span class="text-[10px] sm:text-xs text-accent-purple bg-accent-purple/20 border border-accent-purple/30 px-2.5 py-1 rounded-full font-semibold" id="media-type-badge">
-              ${question?.type === 'video' ? '🎬 ทาย MV (ดูคลิป)' : '🎵 ทายเพลง (ฟังเสียง)'}
-            </span>
-          </div>
 
-          <!-- YouTube IFrame Player Container (Persistent 100% Native YouTube API) -->
-          <div id="game-yt-player-wrap" class="absolute inset-0 w-full h-full bg-black pointer-events-none transition-opacity duration-300 opacity-100 z-10">
-            <div id="game-yt-player" class="w-full h-full"></div>
-          </div>
+          <!-- Anchor for Dual-Player Stage Positioning -->
+          <div id="dual-player-anchor" class="absolute inset-0 w-full h-full pointer-events-none"></div>
 
           <!-- Audio Curtain / Visualizer Overlay -->
           <div id="media-curtain" class="absolute inset-0 bg-[#0a0a14] z-20 flex flex-col items-center justify-center gap-3">
@@ -184,7 +159,7 @@ export function renderGameScreen(): void {
             กำลังเตรียมความพร้อมเข้าสู่เกม
           </h2>
           <p class="text-text-secondary text-xs sm:text-sm mb-6" id="buffering-subtext">
-            ระบบกำลังดึงสตรีมเพลงและตรวจเช็คความพร้อมของผู้เล่นทุกคน...
+            ระบบกำลังเบิร์นโฆษณาและเตรียมบัฟเฟอร์แบบไร้รอยต่อ...
           </p>
 
           <!-- Players Ready Grid -->
@@ -196,7 +171,7 @@ export function renderGameScreen(): void {
           <div class="w-full flex flex-col items-center gap-3 pt-2" id="buffering-controls">
             <div class="flex items-center gap-2 text-xs text-text-muted font-mono" id="hard-timeout-status">
               <div class="spinner !w-3.5 !h-3.5"></div>
-              <span id="hard-timeout-text">กำลังเชื่อมต่อ (จะเริ่มอัตโนมัติเมื่อทุกคนพร้อม)</span>
+              <span id="hard-timeout-text">กำลังเบิร์นโฆษณา (จะเริ่มอัตโนมัติเมื่อทุกคนพร้อม)</span>
             </div>
 
             <!-- Neon Red Force Start Button (Shown for Host on 10s Timeout) -->
@@ -218,7 +193,7 @@ export function renderGameScreen(): void {
               🏆 สรุปคะแนน (ข้อ ${currentIdx + 1}/${totalQ})
             </h2>
             <p class="text-text-muted text-xs mt-1">
-              ✨ กำลังเตรียมสื่อข้อถัดไปในเบื้องหลัง...
+              ✨ เครื่องเล่นคู่กำลังเตรียมสื่อข้อถัดไปแบบไร้โฆษณา...
             </p>
           </div>
 
@@ -240,9 +215,13 @@ export function renderGameScreen(): void {
     return container;
   });
 
-  // Start the controller and flow after DOM mount
+  // Mount DualPlayer stage to viewport
   const currentFlowId = ++activeFlowId;
   queueMicrotask(() => {
+    const viewport = document.getElementById('media-viewport');
+    if (viewport) {
+      dualPlayerManager.mountToGameScreen(viewport);
+    }
     handleFlowState(currentFlowId);
   });
 }
@@ -279,6 +258,9 @@ async function startInitialBuffering(flowId: number, isHost: boolean, myPeerId: 
   const overlay = document.getElementById('initial-buffering-overlay');
   if (overlay) overlay.classList.remove('hidden');
 
+  dualPlayerManager.syncActiveSlot(0);
+  dualPlayerManager.setStageVisible(false);
+
   const question = gameController.currentQuestion;
   if (!question) return;
 
@@ -288,21 +270,15 @@ async function startInitialBuffering(flowId: number, isHost: boolean, myPeerId: 
   isForceStarted = false;
   let hasSignaledReady = false;
 
-  // 1. Client & Host: Initialize YouTube Player & Burn Pre-roll Ad silently behind curtain
+  // 1. Preload & Burn Pre-roll for Slot A
   const bufferTask = async () => {
     try {
-      currentLoadedVideoId = question.youtubeId;
-      ytPlayerInstance = await createYouTubePlayer('game-yt-player', question.youtubeId, question.startTime);
-      if (activeFlowId !== flowId) return;
-
-      // Silent Pre-roll Burner: burns YouTube ads silently behind the dark overlay
-      await burnPreRoll(ytPlayerInstance, question.youtubeId, question.startTime, 8500);
+      await dualPlayerManager.preload('A', question.youtubeId, question.startTime);
     } catch (err) {
-      console.warn('[InitialBuffering] YouTube player pre-roll burner error:', err);
+      console.warn('[InitialBuffering] Slot A preload error:', err);
     } finally {
       if (!hasSignaledReady && activeFlowId === flowId) {
         hasSignaledReady = true;
-        // Signal BUFFER_READY
         signalBufferReady(0, myPeerId, isHost);
       }
     }
@@ -331,7 +307,7 @@ async function startInitialBuffering(flowId: number, isHost: boolean, myPeerId: 
         // If not all players ready, display the Force Start Button prominently
         if (!gameController.isAllPlayersReady(0)) {
           if (hardTimeoutText) {
-            hardTimeoutText.innerHTML = '<span class="text-accent-red font-bold">⚠️ ผู้เล่นบางคนยังโหลดไม่เสร็จ</span>';
+            hardTimeoutText.innerHTML = '<span class="text-accent-red font-bold">⚠️ มีผู้เล่นที่โหลดช้า สามารถบังคับเริ่มได้</span>';
           }
           if (forceStartBtn) {
             forceStartBtn.classList.remove('hidden');
@@ -351,7 +327,6 @@ async function startInitialBuffering(flowId: number, isHost: boolean, myPeerId: 
  * Signal BUFFER_READY to host or process locally
  */
 function signalBufferReady(questionIndex: number, myPeerId: string, isHost: boolean): void {
-  // Update local player ready state
   updatePlayerReadyStatus(myPeerId, true);
 
   if (isHost) {
@@ -359,10 +334,9 @@ function signalBufferReady(questionIndex: number, myPeerId: string, isHost: bool
     updateBufferingUI();
     if (allReady) {
       if (hardTimeoutTimer) clearInterval(hardTimeoutTimer);
-      // Small pause for visual satisfaction of "All Ready"
       setTimeout(() => {
         gameController.startCountdown(questionIndex);
-      }, 400);
+      }, 350);
     }
   } else {
     peerManager.sendBufferReady(questionIndex);
@@ -408,17 +382,19 @@ function startQuestionFlow(question: QuestionSession, flowId: number): void {
   // Update header indicators
   const currentIdx = gameController.currentIndex;
   const totalQ = gameController.totalQuestions;
+
+  // Deterministically sync active slot for this question index
+  dualPlayerManager.syncActiveSlot(currentIdx);
+  // Ensure stage is 100% invisible during countdown (zero video leak over countdown)
+  dualPlayerManager.setStageVisible(false);
+  dualPlayerManager.updateAntiSpoiler(question.type, true);
+
   const stepEl = document.getElementById('header-question-step');
   const barEl = document.getElementById('header-progress-bar');
   const pointsEl = document.getElementById('header-points');
-  const typeBadge = document.getElementById('media-type-badge');
-
   if (stepEl) stepEl.textContent = `ข้อ ${currentIdx + 1}/${totalQ}`;
   if (barEl) barEl.style.width = `${((currentIdx + 1) / totalQ) * 100}%`;
   if (pointsEl) pointsEl.textContent = `${question.points}pt`;
-  if (typeBadge) {
-    typeBadge.textContent = question.type === 'video' ? '🎬 ทาย MV (ดูคลิป)' : '🎵 ทายเพลง (ฟังเสียง)';
-  }
 
   // Update choice options
   const choicesGrid = document.getElementById('choices-grid');
@@ -457,30 +433,17 @@ function startQuestionFlow(question: QuestionSession, flowId: number): void {
     timerProgressBar.style.background = 'linear-gradient(90deg, #3b82f6, #8b5cf6, #06b6d4)';
   }
 
-  // Cancel any lingering pre-roll burn polling
-  cancelBurnPreRoll();
-
-  // Ensure media curtain is active during countdown so no video frame leaks (100% solid pitch black)
+  // Ensure media curtain covers the video during countdown
   const curtain = document.getElementById('media-curtain');
   if (curtain) curtain.classList.remove('hidden');
 
-  // Ensure YouTube player is positioned at startTime and paused
-  if (ytPlayerInstance) {
+  // Ensure active player is paused and positioned at startTime
+  const activeP = dualPlayerManager.getActivePlayer();
+  if (activeP) {
     try {
-      ytPlayerInstance.pauseVideo();
-      ytPlayerInstance.seekTo(question.startTime, true);
+      activeP.pauseVideo();
+      activeP.seekTo(question.startTime, true);
     } catch {}
-  } else {
-    currentLoadedVideoId = question.youtubeId;
-    createYouTubePlayer('game-yt-player', question.youtubeId, question.startTime)
-      .then((p) => {
-        ytPlayerInstance = p;
-        try {
-          p.pauseVideo();
-          p.seekTo(question.startTime, true);
-        } catch {}
-      })
-      .catch(() => {});
   }
 
   // Execute countdown 3..2..1
@@ -522,6 +485,7 @@ function runCountdown(flowId: number, onComplete: () => void): void {
 
 /**
  * Play Snippet then unlock Answering Buttons
+ * Plus: Background player preloads Question N+1 immediately during snippet!
  */
 function runSnippetAndAnswering(question: QuestionSession, flowId: number): void {
   const curtain = document.getElementById('media-curtain');
@@ -532,7 +496,16 @@ function runSnippetAndAnswering(question: QuestionSession, flowId: number): void
 
   hasAnsweredCurrent = false;
 
-  // Lock buttons during snippet playback
+  // 1. Start Preloading Question N+1 on Background Slot immediately!
+  const nextIdx = gameController.currentIndex + 1;
+  const nextQuestion = gameController.questions[nextIdx];
+  if (nextQuestion) {
+    const bgSlot = dualPlayerManager.getBackgroundSlot();
+    console.log(`[DualPlayer] Pre-buffering Question ${nextIdx + 1} on Background Slot ${bgSlot}...`);
+    dualPlayerManager.preload(bgSlot, nextQuestion.youtubeId, nextQuestion.startTime).catch(() => {});
+  }
+
+  // 2. Lock buttons during snippet playback
   buttons.forEach((btn) => {
     btn.disabled = true;
     btn.classList.add('opacity-60', 'cursor-not-allowed');
@@ -544,26 +517,27 @@ function runSnippetAndAnswering(question: QuestionSession, flowId: number): void
       : `🎧 กำลังเปิดเสียงเพลง... <span class="text-accent-cyan font-bold">${snippetDuration}s</span> (รอเพลงจบเพื่อตอบ)`;
   }
 
-  // Setup media presentation & start unmuted playback
+  // Uncover video only if video MV mode
   if (question.type === 'video') {
-    if (curtain) curtain.classList.add('hidden'); // Uncover video for MV mode
+    if (curtain) curtain.classList.add('hidden');
+    dualPlayerManager.setStageVisible(true);
+    dualPlayerManager.updateAntiSpoiler('video', true);
   } else {
-    if (curtain) curtain.classList.remove('hidden'); // Keep curtain with visualizer for Music mode
+    if (curtain) curtain.classList.remove('hidden');
+    dualPlayerManager.setStageVisible(false);
   }
 
-  if (ytPlayerInstance) {
-    if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-    activeSegmentCancel = playSegment(ytPlayerInstance, question.startTime, snippetDuration, () => {}).cancel;
-  }
+  // 3. Play snippet on Active Player unmuted
+  if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+  activeSegmentCancel = dualPlayerManager.playSnippet(snippetDuration).cancel;
 
-  // Snippet timer: pause media & unlock buttons for Answering
+  // 4. Snippet Timer completes -> Transition to Answering
   snippetTimeout = setTimeout(() => {
     if (activeFlowId !== flowId) return;
 
     if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-    if (ytPlayerInstance) {
-      try { ytPlayerInstance.pauseVideo(); } catch {}
-    }
+    dualPlayerManager.getActivePlayer()?.pauseVideo();
+    dualPlayerManager.setStageVisible(false);
 
     // Cover video immediately with curtain to prevent visual spoiler while answering
     if (curtain) curtain.classList.remove('hidden');
@@ -679,6 +653,7 @@ function startTimerBar(durationSec: number, onExpire?: () => void): () => void {
 /**
  * ─────────────────────────────────────────────────────────────
  * REVEAL PHASE (5 Seconds Video / Audio Uncovered)
+ * Personalized Answer Choice Styling
  * ─────────────────────────────────────────────────────────────
  */
 function showReveal(question: QuestionSession): void {
@@ -694,17 +669,12 @@ function showReveal(question: QuestionSession): void {
   // Hide curtain and countdown so reveal video/audio is uncovered
   if (curtain) curtain.classList.add('hidden');
   if (countdownOverlay) countdownOverlay.classList.add('hidden');
+  dualPlayerManager.setStageVisible(true);
+  dualPlayerManager.updateAntiSpoiler(question.type, false);
 
   // Update Status Banner
   if (statusText) {
     statusText.innerHTML = `🎬 <span class="text-accent-green font-bold">เฉลยคลิป:</span> <span class="text-text-primary font-bold">${question.title}</span>`;
-  }
-
-  // Update Media Type Badge in Video Header
-  const typeBadge = document.getElementById('media-type-badge');
-  if (typeBadge) {
-    typeBadge.className = 'text-[10px] sm:text-xs text-accent-green bg-accent-green/20 border border-accent-green/30 px-2.5 py-0.5 rounded-full font-semibold';
-    typeBadge.textContent = '🎬 กำลังเล่นคลิปเฉลย';
   }
 
   // Reveal Timer Progress Bar Countdown
@@ -730,25 +700,18 @@ function showReveal(question: QuestionSession): void {
   if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
   currentTimerCancel = startTimerBar(config.revealDuration);
 
-  // Uncover video & play reveal audio/video continuously
+  // Play reveal on Active Player
   const revealStart = (typeof question.revealStartTime === 'number' && question.revealStartTime >= 0)
     ? question.revealStartTime
     : question.startTime;
 
-  if (ytPlayerInstance) {
-    if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-    activeSegmentCancel = ytPlayReveal(ytPlayerInstance, revealStart, config.revealDuration).cancel;
-  } else {
-    createYouTubePlayer('game-yt-player', question.youtubeId, revealStart)
-      .then((p) => {
-        ytPlayerInstance = p;
-        if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-        activeSegmentCancel = ytPlayReveal(p, revealStart, config.revealDuration).cancel;
-      })
-      .catch(() => {});
-  }
+  if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
+  activeSegmentCancel = dualPlayerManager.playReveal(revealStart, config.revealDuration).cancel;
 
-  // Highlight correct / wrong answers
+  // Personalized highlight logic:
+  // - Correct answer is always green
+  // - If the current player got it right: all other options dim (opacity-35), no red anywhere
+  // - If the current player got it wrong: ONLY their chosen option turns red; others dim (opacity-35)
   const myPeerId = peerManager.peerId || 'local';
   const myChoice = answers[myPeerId] as number | undefined;
   const iAnsweredCorrectly = myChoice === question.correctIndex;
@@ -759,18 +722,15 @@ function showReveal(question: QuestionSession): void {
     btn.classList.remove('selected');
 
     if (i === question.correctIndex) {
-      // Always highlight correct answer green
       btn.classList.add('correct');
+      btn.style.opacity = '1';
     } else if (iAnsweredCorrectly) {
-      // Player got it right → dim other buttons, no red anywhere
       btn.style.opacity = '0.35';
     } else {
-      // Player got it wrong
       if (i === myChoice) {
-        // Red only on MY wrong choice
         btn.classList.add('wrong');
+        btn.style.opacity = '1';
       } else {
-        // Dim all other non-correct, non-chosen buttons
         btn.style.opacity = '0.35';
       }
     }
@@ -803,24 +763,18 @@ function showReveal(question: QuestionSession): void {
   revealTimeout = setTimeout(() => {
     if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
     if (activeSegmentCancel) { activeSegmentCancel(); activeSegmentCancel = null; }
-    if (ytPlayerInstance) {
-      try {
-        ytPlayerInstance.pauseVideo();
-        ytPlayerInstance.mute();
-      } catch {}
-    }
+    dualPlayerManager.getActivePlayer()?.pauseVideo();
+    dualPlayerManager.getActivePlayer()?.mute();
 
     if (curtain) curtain.classList.remove('hidden');
 
     if (peerManager.isHost || peerManager.role === 'solo') {
       const nextIdx = gameController.currentIndex + 1;
       if (nextIdx >= gameController.totalQuestions) {
-        // Game completed -> Navigate to final results
         gameController.gameOver();
         cleanupGameScreen();
         navigate('/results');
       } else {
-        // Transition to Intermediate Leaderboard
         gameController.triggerIntermediateLeaderboard();
       }
     }
@@ -829,7 +783,7 @@ function showReveal(question: QuestionSession): void {
 
 /**
  * ─────────────────────────────────────────────────────────────
- * INTERMEDIATE LEADERBOARD (FLIP Animation & Double-Buffering)
+ * INTERMEDIATE LEADERBOARD (FLIP Animation & Ping-Pong Swap)
  * ─────────────────────────────────────────────────────────────
  */
 function showIntermediateLeaderboard(): void {
@@ -887,37 +841,33 @@ function showIntermediateLeaderboard(): void {
     });
   }
 
-  // Ensure media curtain covers player behind leaderboard
+  // Ensure media curtain covers player behind leaderboard & stage is invisible
   const curtain = document.getElementById('media-curtain');
   if (curtain) curtain.classList.remove('hidden');
+  dualPlayerManager.setStageVisible(false);
+  dualPlayerManager.pauseAll();
 
-  // 2. DOUBLE-BUFFERING PIPELINE: Silent Pre-roll Burner for Question N+1 behind Leaderboard Overlay
+  // 2. Ensure Background Player is preloaded with Question N+1
   const nextIdx = currentIdx + 1;
   const nextQuestion = gameController.questions[nextIdx];
+  const bgSlot = dualPlayerManager.getBackgroundSlot();
 
   if (nextQuestion && !isPreparingNext) {
     isPreparingNext = true;
-    (async () => {
-      try {
-        if (!ytPlayerInstance) {
-          ytPlayerInstance = await createYouTubePlayer('game-yt-player', nextQuestion.youtubeId, nextQuestion.startTime);
-        }
-        currentLoadedVideoId = nextQuestion.youtubeId;
-
-        // Silent Pre-roll Burner: burn any ad for next question during 4.5s leaderboard
-        await burnPreRoll(ytPlayerInstance, nextQuestion.youtubeId, nextQuestion.startTime, 4000);
-      } catch (err) {
-        console.warn('[DoubleBuffering] YouTube pre-roll burner error:', err);
-      } finally {
-        isPreparingNext = false;
-        // Signal ready for next question
+    dualPlayerManager.preload(bgSlot, nextQuestion.youtubeId, nextQuestion.startTime)
+      .then(() => {
         if (isHost) {
           gameController.setPlayerReady(myPeerId, nextIdx);
         } else {
           peerManager.sendBufferReady(nextIdx);
         }
-      }
-    })();
+      })
+      .catch((err) => {
+        console.warn('[Leaderboard] Background preload error:', err);
+      })
+      .finally(() => {
+        isPreparingNext = false;
+      });
   }
 
   // 3. Animate progress bar across 4.5 seconds
@@ -930,8 +880,11 @@ function showIntermediateLeaderboard(): void {
     });
   }
 
-  // 4. Advance to next question countdown after 4.5 seconds
+  // 4. Advance to next question countdown after 4.5 seconds:
+  // Deterministically switch active player slot to match Question N+1
   intermediateTimeout = setTimeout(() => {
+    dualPlayerManager.syncActiveSlot(currentIdx + 1);
+
     if (isHost || peerManager.role === 'solo') {
       gameController.nextQuestion();
     }
@@ -1174,7 +1127,6 @@ function renderIntermediateCards(players: PlayerInfo[], deltas: Record<string, n
 }
 
 function cleanupTimers(): void {
-  cancelBurnPreRoll();
   if (currentTimerCancel) { currentTimerCancel(); currentTimerCancel = null; }
   if (currentCountdownCancel) { currentCountdownCancel(); currentCountdownCancel = null; }
   if (snippetTimeout) { clearTimeout(snippetTimeout); snippetTimeout = null; }
@@ -1186,10 +1138,6 @@ function cleanupTimers(): void {
 
 export function cleanupGameScreen(): void {
   cleanupTimers();
-  if (ytPlayerInstance) {
-    try { stopPlayer(ytPlayerInstance); } catch {}
-    try { destroyPlayer(); } catch {}
-    ytPlayerInstance = null;
-  }
-  currentLoadedVideoId = null;
+  dualPlayerManager.hideFromGameScreen();
+  dualPlayerManager.stopAll();
 }

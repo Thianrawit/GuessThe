@@ -67,7 +67,24 @@ class GameController {
 
   /** Set game config */
   setConfig(config: Partial<GameConfig>): void {
+    const prevCount = this._config.questionCount;
     this._config = { ...this._config, ...config };
+
+    if (this._phase === 'LOBBY' && config.questionCount !== undefined && config.questionCount !== prevCount) {
+      const pool = loadPool();
+      if (pool.length >= 4) {
+        const targetCount = this._config.questionCount === 'all'
+          ? pool.length
+          : Math.min(Number(this._config.questionCount), pool.length);
+        if (this._questions.length > 0) {
+          if (this._questions.length > targetCount) {
+            this._questions = this._questions.slice(0, targetCount);
+          } else {
+            this._questions = generateQuestions(pool, this._config.questionCount);
+          }
+        }
+      }
+    }
   }
 
   /** Add or update a player */
@@ -164,6 +181,17 @@ class GameController {
     return counts;
   }
 
+  /** Prepare questions early in lobby (for background preloading) */
+  ensureQuestionsPrepared(): QuestionSession[] {
+    if (this._questions.length === 0) {
+      const pool = loadPool();
+      if (pool.length >= 4) {
+        this._questions = generateQuestions(pool, this._config.questionCount);
+      }
+    }
+    return this._questions;
+  }
+
   /** HOST: Start the game — transitions to INITIAL_BUFFERING */
   startGame(): void {
     if (this._phase !== 'LOBBY') {
@@ -175,8 +203,17 @@ class GameController {
     if (pool.length < 4) {
       throw new Error('ต้องมีเพลงอย่างน้อย 4 เพลงในคลัง');
     }
+    const targetCount = this._config.questionCount === 'all'
+      ? pool.length
+      : Math.min(Number(this._config.questionCount), pool.length);
 
-    this._questions = generateQuestions(pool, this._config.questionCount);
+    if (this._questions.length === 0 || this._questions.length !== targetCount) {
+      if (this._questions.length > targetCount) {
+        this._questions = this._questions.slice(0, targetCount);
+      } else {
+        this._questions = generateQuestions(pool, this._config.questionCount);
+      }
+    }
     this._currentIndex = 0;
     this._readyPlayers.clear();
     this._lastScoreDeltas.clear();

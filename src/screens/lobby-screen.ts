@@ -6,6 +6,7 @@ import { setScreen, generateRoomCode } from '../utils/dom';
 import { navigate, getCurrentRoute } from '../utils/router';
 import { peerManager } from '../network/peer-manager';
 import { gameController } from '../game/game-controller';
+import { dualPlayerManager } from '../engine/youtube-player';
 import type { PlayerInfo, NetworkPacket } from '../types/index';
 
 export function renderLobbyScreen(): void {
@@ -280,6 +281,14 @@ export function renderLobbyScreen(): void {
           }
         });
 
+        // Update questionCount immediately when host changes select
+        document.getElementById('select-question-count')?.addEventListener('change', (e) => {
+          const val = (e.target as HTMLSelectElement).value;
+          gameController.setConfig({
+            questionCount: val === 'all' ? 'all' : (parseInt(val) || 10),
+          });
+        });
+
         // Direct lobby room join for clients
         const lobbyRoomInput = document.getElementById('lobby-input-room-code') as HTMLInputElement | null;
         lobbyRoomInput?.addEventListener('input', () => {
@@ -321,15 +330,35 @@ export function renderLobbyScreen(): void {
 
     // Initialize based on mode
     async function init(): Promise<void> {
+      dualPlayerManager.warmUp().catch(() => {});
+
+      function preloadQuestion0(): void {
+        const questions = gameController.ensureQuestionsPrepared();
+        if (questions && questions.length > 0) {
+          const q0 = questions[0];
+          console.log('[Lobby] Starting background pre-burn for Question 1:', q0.youtubeId);
+          dualPlayerManager.preload('A', q0.youtubeId, q0.startTime)
+            .then((res) => {
+              console.log('[Lobby] Question 1 Ready:', res);
+              gameController.setPlayerReady(peerManager.peerId || 'local', 0);
+            })
+            .catch((err) => {
+              console.warn('[Lobby] Question 1 preload failed:', err);
+            });
+        }
+      }
+
       if (mode === 'solo') {
         isConnecting = false;
         gameController.destroy();
         gameController.addPlayer('local', playerName, true);
         players = gameController.players;
         renderLobbyContent();
+        preloadQuestion0();
       } else if (mode === 'host') {
         roomCode = generateRoomCode();
         gameController.addPlayer(peerManager.peerId || 'host', playerName, true);
+        preloadQuestion0();
 
         peerManager.on({
           onOpen: (peerId) => {
@@ -467,6 +496,16 @@ export function renderLobbyScreen(): void {
         }
         case 'ROOM_INIT':
           gameController.receiveGameInit(packet.questions, packet.config, packet.players);
+          if (packet.questions && packet.questions.length > 0) {
+            const q0 = packet.questions[0];
+            dualPlayerManager.preload('A', q0.youtubeId, q0.startTime)
+              .then(() => {
+                peerManager.sendBufferReady(0);
+              })
+              .catch(() => {
+                peerManager.sendBufferReady(0);
+              });
+          }
           navigate('/game');
           break;
       }

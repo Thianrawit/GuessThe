@@ -5,6 +5,7 @@
 import { setScreen } from '../utils/dom';
 import { navigate } from '../utils/router';
 import { loadPool, loadSampleTracks } from '../engine/track-pool';
+import { dualPlayerManager } from '../engine/youtube-player';
 
 const PLAYER_NAME_KEY = 'guessthe_player_name';
 
@@ -152,6 +153,7 @@ export function renderHomeScreen(): void {
 
       // Solo
       document.getElementById('btn-solo')?.addEventListener('click', () => {
+        dualPlayerManager.warmUp().catch(() => {});
         if (isNavigating) return;
         if (!validateName()) return;
         const pool = loadPool();
@@ -165,6 +167,7 @@ export function renderHomeScreen(): void {
 
       // Create Room
       document.getElementById('btn-create-room')?.addEventListener('click', () => {
+        dualPlayerManager.warmUp().catch(() => {});
         if (isNavigating) return;
         if (!validateName()) return;
         const pool = loadPool();
@@ -178,6 +181,7 @@ export function renderHomeScreen(): void {
 
       // Join Room
       document.getElementById('btn-join-room')?.addEventListener('click', () => {
+        dualPlayerManager.warmUp().catch(() => {});
         if (isNavigating) return;
         if (!validateName()) return;
         const code = roomInput?.value.trim().replace(/[^0-9]/g, '') || '';
